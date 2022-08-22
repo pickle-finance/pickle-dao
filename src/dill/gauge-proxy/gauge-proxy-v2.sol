@@ -20,13 +20,15 @@ interface IVirtualGaugeMiddleware {
 }
 
 interface IRootChainGaugeMiddleware {
-    function addRootChainGauge() external returns (address);
+    function addRootChainGauge(uint256 chainId) external returns (address);
 }
 
 interface iGaugeV2 {
     function notifyRewardAmount(
-        address[] memory rewarders,
-        uint256[] memory rewards
+        address rewardToken,
+        uint256 rewards,
+        int256[] memory weights,
+        uint256 periodId
     ) external;
 }
 
@@ -182,15 +184,24 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
     address[] internal _tokens;
 
-    uint256 private _gaugeTypeCounter;
+    enum GaugeType { REGULAR, VIRTUAL, ROOT }
+
+    struct Gauge {
+        uint256 chainId;
+        GaugeType gaugeType;
+        address gaugeAddress;
+    }
 
     // token => gauge
-    mapping(address => address) public gauges;
+    mapping(address => Gauge) public gauges;
     mapping(address => uint256) public gaugeWithNegativeWeight;
-    mapping(address => bool) public isVirtualGauge;
-    mapping(uint256 => string) public gaugeTypeIds;
-    mapping(address => uint256) public gaugeToGaugeType;
-    mapping(uint256 => mapping(uint256 => int256)) public gaugeTypeWeights;
+    mapping(uint256 => string) public chainIds;
+    mapping(uint256 => address[]) public tokensByChainId;
+    mapping(address => uint256) public sidechainTokenIndex;
+    uint256 public _chainIdCounter;
+    mapping(uint256 => address) public rootGauge;
+
+    mapping(uint256 => uint256) public chainIdWeights;
 
     uint256 public constant WEEK_SECONDS = 604800;
     // epoch time stamp
@@ -238,7 +249,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         return _tokens;
     }
 
-    function getGauge(address _token) external view returns (address) {
+    function getGauge(address _token) external view returns (Gauge memory) {
         return gauges[_token];
     }
 
@@ -246,12 +257,12 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         TOKEN = IERC20(address(new MasterDill()));
         governance = msg.sender;
         firstDistribution = _firstDistribution;
-        distributionId = 1;
-        lastVotedPeriodId = 1;
-        periodForDistribute[1] = 1;
-        _gaugeTypeCounter = 1;
-        // default chain gauge type current id is 1, _gaugeTypeCounterId is 1 and weight is 1;
-        gaugeTypeWeights[1][1] = 1;
+        uint256 _currentId = 1;
+        distributionId = _currentId;
+        lastVotedPeriodId = _currentId;
+        periodForDistribute[_currentId] = _currentId;
+        _chainIdCounter = 0;
+        chainIdWeights[_chainIdCounter] = 1;
     }
 
     function addGaugeMiddleware(address _gaugeMiddleware) external {
@@ -301,15 +312,19 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         );
     }
 
-    function setTypeWeight(uint256 _gaugeTypeId, int256 weight) external {
+    function setChainIdWeight(uint256 _chainId, uint256 weight) external {
         require(msg.sender == governance, "!gov");
         require(
-            _gaugeTypeId > 0 && _gaugeTypeId <= _gaugeTypeCounter,
-            "invalid gauge type id"
+            _chainId > 0 && _chainId <= _chainIdCounter,
+            "invalid chain id"
         );
-        gaugeTypeWeights[getCurrentPeriodId()][_gaugeTypeId] = weight;
+        require(
+            distributionId == getCurrentPeriodId(),
+            "GaugeProxyV2: !all distributions complete"
+        );
+        chainIdWeights[_chainId] = weight;
 
-        emit GaugeTypeWeightUpdated(_gaugeTypeId, weight);
+        emit GaugeTypeWeightUpdated(_chainId, weight);
     }
 
     // Reset votes to 0
@@ -342,6 +357,14 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
                     ][_token];
 
                     tokenLastVotedPeriodId[_token] = _currentId;
+                }
+
+                Gauge memory gauge = gauges[_token];
+
+                if (gauge.chainId > 0) {
+                    uint256 chainId = gauge.chainId;
+                    address _rootGauge = rootGauge[chainId];
+                    weights[_currentId][_rootGauge] -= _votes;
                 }
 
                 weights[_currentId][_token] -= _votes;
@@ -381,26 +404,27 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         uint256 _tokenCnt = _tokenVote.length;
         int256 _weight = int256(DILL.balanceOf(_owner));
         int256 _totalVoteWeight = 0;
-        int256 _totalTypeWeight = 0;
-        address[] memory gaugesData = new address[](_tokenCnt);
-        int256[] memory gaugeTypeWeightByCurrentId = new int256[](_tokenCnt);
         int256 _usedWeight = 0;
 
+        
         for (uint256 i = 0; i < _tokenCnt; i++) {
             _totalVoteWeight += (_weights[i] > 0 ? _weights[i] : -_weights[i]);
-            gaugesData[i] = gauges[_tokenVote[i]];
-            gaugeTypeWeightByCurrentId[i] = gaugeTypeWeights[_currentId][
-                gaugeToGaugeType[gaugesData[i]]
-            ];
-            _totalTypeWeight += gaugeTypeWeightByCurrentId[i];
         }
 
         for (uint256 i = 0; i < _tokenCnt; i++) {
-            int256 _tokenWeight = (_weights[i] *
-                gaugeTypeWeightByCurrentId[i] *
-                _weight) / (_totalVoteWeight * _totalTypeWeight);
+            address _token = _tokenVote[i];
+            Gauge memory gauge = gauges[_token];
+            GaugeType gaugeType = gauge.gaugeType;
+            int256 _tokenWeight = (_weights[i] * _weight * 
+                int256(chainIdWeights[gauge.chainId])) / _totalVoteWeight;
 
-            if (gaugesData[i] != address(0x0)) {
+            if (gauge.gaugeAddress != address(0x0) && gaugeType != GaugeType.ROOT) {
+                if (gauge.chainId > 0) {
+                    uint256 chainId = gauge.chainId;
+                    address _rootGauge = rootGauge[chainId];
+                    weights[_currentId][_rootGauge] += _tokenWeight;
+                }
+                
                 weights[_currentId][_tokenVote[i]] += _tokenWeight;
                 votes[_owner][_tokenVote[i]] = _tokenWeight;
                 tokenVote[_owner].push(_tokenVote[i]);
@@ -495,88 +519,122 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     }
 
     // Add new token gauge
-    function addGauge(address _token) external {
+    function addGauge(address _token, uint256 _chainId, address gaugeAddress) external {
         require(msg.sender == governance, "!gov");
+        require(
+            _chainId > 0 && _chainId <= _chainIdCounter,
+            "invalid chain id"
+        );
         require(
             address(gaugeMiddleware) != address(0),
             "cannot add new gauge without initializing gaugeMiddleware"
         );
-        require(gauges[_token] == address(0x0), "exists");
-        address[] memory _rewardTokens = new address[](1);
-        _rewardTokens[0] = address(PICKLE);
-        gauges[_token] = gaugeMiddleware.addGauge(_token, governance);
-        gaugeToGaugeType[_token] = 1;
-        _tokens.push(_token);
-    }
+        Gauge memory _gauge = gauges[_token];
+        require(gauges[_token].gaugeAddress == address(0x0), "exists");
+        
 
-    function addRootChainGauge(address _token, uint256 _gaugeTypeId) external {
-        require(msg.sender == governance, "!gov");
-        require(
-            address(gaugeMiddleware) != address(0),
-            "cannot add new gauge without initializing gaugeMiddleware"
-        );
-        require(gauges[_token] == address(0x0), "exists");
-        gauges[_token] = rootChainGaugeMiddleware.addRootChainGauge();
-        gaugeToGaugeType[_token] = _gaugeTypeId;
-        _tokens.push(_token);
-    }
+        if (_chainId == 0) {
+            _gauge.gaugeAddress = gaugeMiddleware.addGauge(_token, governance);
+        } else {
+            require(gaugeAddress != address(0), "Invalid Gauge Address");
+            _gauge.gaugeAddress = gaugeAddress;
+        }
 
-    function addGaugeType(string calldata name) external {
-        require(msg.sender == governance, "!gov");
-        uint256 gaugeTypeCounter = _gaugeTypeCounter;
-        gaugeTypeCounter += 1;
-        gaugeTypeIds[gaugeTypeCounter] = name;
-        _gaugeTypeCounter = gaugeTypeCounter;
-        gaugeTypeWeights[getCurrentPeriodId()][gaugeTypeCounter] = 1;
-        emit NewGaugeType(gaugeTypeCounter, name, 1);
+        tokensByChainId[_chainId].push(_token);
+        _gauge.chainId = _chainId;
+        _gauge.gaugeType = GaugeType.REGULAR;
+        sidechainTokenIndex[_token] = tokensByChainId[_chainId].length - 1;
+        _tokens.push(_token);
     }
 
     // Add new token virtual gauge
-    function addVirtualGauge(address _token, address _jar) external {
+    function addVirtualGauge(address _token, address _jar, uint256 _chainId, address gaugeAddress) external {
         require(msg.sender == governance, "!gov");
+        require(
+            _chainId > 0 && _chainId <= _chainIdCounter,
+            "invalid chain id"
+        );
         require(
             address(gaugeMiddleware) != address(0),
             "cannot add new gauge without initializing gaugeMiddleware"
         );
-        require(gauges[_token] == address(0x0), "exists");
-        address[] memory _rewardTokens = new address[](1);
-        _rewardTokens[0] = address(PICKLE);
-        address vgauge = virtualGaugeMiddleware.addVirtualGauge(
-            _jar,
-            governance
-        );
-        gauges[_token] = vgauge;
-        isVirtualGauge[vgauge] = true;
-        gaugeToGaugeType[_token] = 1;
+        Gauge memory _gauge = gauges[_token];
+
+        require(_gauge.gaugeAddress == address(0x0), "exists");
+
+        if (_chainId == 0) {
+            _gauge.gaugeAddress = virtualGaugeMiddleware.addVirtualGauge(
+                _jar,
+                governance
+            );
+        } else {
+            require(gaugeAddress != address(0), "Invalid Gauge Address");
+            _gauge.gaugeAddress = gaugeAddress;
+        }
+
+        tokensByChainId[_chainId].push(_token);
+        _gauge.chainId = _chainId;
+        _gauge.gaugeType = GaugeType.VIRTUAL;
+
         _tokens.push(_token);
+    }
+
+    function addNewSideChain(string calldata name, uint256 weight, uint256 chainId) external {
+        require(msg.sender == governance, "!gov");
+        uint256 currentId = getCurrentPeriodId();
+        require(
+            distributionId == currentId,
+            "GaugeProxyV2: !all distributions complete"
+        );
+
+        _chainIdCounter += 1;
+        chainIds[_chainIdCounter] = name;
+        chainIdWeights[_chainIdCounter] = weight;
+        
+        address newRootGauge = rootChainGaugeMiddleware.addRootChainGauge(chainId);
+        Gauge memory _gauge = gauges[newRootGauge];
+
+        _gauge.gaugeAddress = newRootGauge;
+        _gauge.chainId = _chainIdCounter;
+        _gauge.gaugeType = GaugeType.ROOT;
+        
+        _tokens.push(newRootGauge);
+        
+        emit NewGaugeType(_chainIdCounter, newRootGauge, name, weight);
     }
 
     function delistGauge(address _token) external {
         require(msg.sender == governance, "!gov");
-        require(gauges[_token] != address(0x0), "!exists");
+        require(gauges[_token].gaugeAddress != address(0x0), "!exists");
+        require(gauges[_token].gaugeType != GaugeType.ROOT, "!Cannot delist root gauge");
 
         uint256 currentId = getCurrentPeriodId();
         require(distributionId == currentId, "! all distributions completed");
 
-        address _gauge = gauges[_token];
+        address _gauge = gauges[_token].gaugeAddress;
 
         require(gaugeWithNegativeWeight[_gauge] >= 5, "censors < 5");
 
-        delete isVirtualGauge[_gauge];
-        delete gauges[_token];
+        uint256 chainId = gauges[_token].chainId;
+        address _rootGauge = rootGauge[chainId];
 
-        uint256 tokensLength = _tokens.length;
-        address[] memory newTokenArray = new address[](tokensLength - 1);
-
-        uint256 j = 0;
-        for (uint256 i = 0; i < tokensLength; i++) {
-            if (_tokens[i] != _token) {
-                newTokenArray[j] = _tokens[i];
-                j++;
-            }
+        uint256 periodToUse = 0;
+        if (periodForDistribute[distributionId] == 0) {
+            // If period does not exist means no votes in this period
+            // Use previous period's votes and update dist. period
+            periodToUse = periodForDistribute[distributionId - 1];
+            periodForDistribute[distributionId] = periodForDistribute[
+                distributionId - 1
+            ];
+        } else {
+            periodToUse = periodForDistribute[distributionId];
         }
 
-        _tokens = newTokenArray;
+        int256 sidechainWeight = weights[periodToUse][tokensByChainId[chainId][sidechainTokenIndex[_token]]];
+
+        weights[currentId][_rootGauge] -= sidechainWeight;
+
+        delete gauges[_token];
     }
 
     // Sets MasterChef PID
@@ -640,28 +698,42 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
         if (_balance > 0 && _totalWeight > 0) {
             for (uint256 i = _start; i < _end; i++) {
-                if (distributed[distributionId][i]) {
-                    continue;
-                }
+                if (distributed[distributionId][i]) continue;
+
                 address _token = _tokens[i];
-                address _gauge = gauges[_token];
+                Gauge memory _gauge = gauges[_token];
+                GaugeType _gaugeType = _gauge.gaugeType;
+                address _gaugeAddress = _gauge.gaugeAddress;
+
+                if (_gaugeAddress == address(0) || _gauge.chainId > 0) continue;
+                
+                uint256 chainId = _gauge.chainId;
+                int256[] memory _weights = new int256[](0);
+
+                if (_gaugeType == GaugeType.ROOT) {
+                    _weights = new int256[](tokensByChainId[chainId].length);
+                    for (uint256 j = 0; j < _weights.length; i++) {
+                        address token = tokensByChainId[chainId][j];
+                        if (gauges[token].gaugeAddress == address(0)) {
+                            _weights[j] = 0;
+                        } else {
+                            _weights[j] = weights[periodToUse][tokensByChainId[chainId][j]];
+                        }
+                    }
+                }
+
                 int256 _reward = (_balance * weights[periodToUse][_token]) /
                     _totalWeight;
+
                 if (_reward > 0) {
                     uint256 reward_ = uint256(_reward);
-                    uint256[] memory rewardArr = new uint256[](1);
-                    address[] memory _rewarder = new address[](1);
-                    rewardArr[0] = reward_;
-                    _rewarder[0] = address(this);
-
-                    PICKLE.safeApprove(_gauge, 0);
-                    PICKLE.safeApprove(_gauge, reward_);
-
-                    iGaugeV2(_gauge).notifyRewardAmount(_rewarder, rewardArr);
+                    PICKLE.safeApprove(_gaugeAddress, 0);
+                    PICKLE.safeApprove(_gaugeAddress, reward_);
+                    iGaugeV2(_gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, _weights, periodToUse);
                 }
 
                 if (_reward < 0) {
-                    gaugeWithNegativeWeight[_gauge] += 1;
+                    gaugeWithNegativeWeight[_gaugeAddress] += 1;
                 }
                 distributed[distributionId][i] = true;
             }
@@ -671,6 +743,6 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         }
     }
 
-    event NewGaugeType(uint256 gaugeTypeId, string indexed name, int256 weight);
-    event GaugeTypeWeightUpdated(uint256 indexed gaugeTypeId, int256 weight);
+    event NewGaugeType(uint256 gaugeTypeId, address indexed rootGauge, string indexed name, uint256 weight);
+    event GaugeTypeWeightUpdated(uint256 indexed gaugeTypeId, uint256 weight);
 }

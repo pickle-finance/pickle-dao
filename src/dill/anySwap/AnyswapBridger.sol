@@ -72,7 +72,6 @@ contract AnyswapBridger {
     function bridge(
         uint256 chainId,
         uint256 amount,
-        address[] calldata mainchainGauges,
         uint256[] calldata weights
     ) external {
         address vault = sidechainVaults[chainId];
@@ -87,7 +86,6 @@ contract AnyswapBridger {
         bytes memory msg = abi.encode(
             chainId,
             amount,
-            addressToBytes(mainchainGauges),
             uint256ToBytes(weights)
         );
         uint256 fee = anyswap.calcSrcFees(appId, chainId, msg.length);

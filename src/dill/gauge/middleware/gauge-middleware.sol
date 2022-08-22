@@ -119,8 +119,8 @@ contract RootChainGaugeMiddleware is ProtocolGovernance, Initializable {
         gaugeProxy = _newgaugeProxy;
     }
 
-    function addRootChainGauge() external returns (address) {
+    function addRootChainGauge(uint256 chainId) external returns (address) {
         require(msg.sender == gaugeProxy, "can only be called by gaugeProxy");
-        return address(new RootChainGaugeV2(anyswap));
+        return address(new RootChainGaugeV2(anyswap, chainId));
     }
 }

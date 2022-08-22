@@ -8,7 +8,14 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 
 interface IAnyswapBridger {
-    function bridge(uint256 amount) external payable;
+    function bridge(
+        address token,
+        uint256 amount,
+        address receiver,
+        uint256 toChainId,
+        uint256 flags,
+        int256[] memory weights,
+        uint256 periodId) external payable;
 }
 
 contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
@@ -19,6 +26,8 @@ contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     // Constant for various precisions
     uint256 public constant DURATION = 7 days;
+    uint256 public chainId;
+    address public sidechainGaugeProxy;
 
     //Reward addresses
     address[] public rewardTokens;
@@ -56,9 +65,11 @@ contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _anyswapBridger) {
+    constructor(address _anyswapBridger, uint256 _chainId, address _sidechainGaugeProxy) {
         anyswapBridger = IAnyswapBridger(_anyswapBridger);
+        chainId = _chainId;
         governance = msg.sender;
+        sidechainGaugeProxy = _sidechainGaugeProxy;
     }
 
     /* ========== VIEWS ========== */
@@ -120,9 +131,7 @@ contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
-    /* ========== RESTRICTED FUNCTIONS ========== */
-
-    function notifyRewardAmount(address _rewardToken, uint256 _reward)
+    function notifyRewardAmount(address _rewardToken, uint256 _reward, int256[] calldata _weights, uint256 periodId)
         external
         onlyDistribution(_rewardToken)
     {
@@ -161,7 +170,15 @@ contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
         token.lastUpdateTime = block.timestamp;
         token.periodFinish = block.timestamp + DURATION;
-        anyswapBridger.bridge(_reward);
+        anyswapBridger.bridge(
+            address(PICKLE),
+            _reward,
+            sidechainGaugeProxy,
+            chainId,
+            2,
+            _weights,
+            periodId
+        );
         rewardTokenDetails[_rewardToken] = token;
     }
 

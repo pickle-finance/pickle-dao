@@ -567,7 +567,7 @@ contract VirtualGaugeV2 is
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
-    function notifyRewardAmount(address _rewardToken, uint256 _reward)
+    function notifyRewardAmount(address _rewardToken, uint256 _reward, int256[] calldata _weights, uint256 periodId)
         external
         onlyDistribution(_rewardToken)
         updateReward(address(0), false)

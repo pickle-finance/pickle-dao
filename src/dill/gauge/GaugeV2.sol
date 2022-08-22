@@ -609,7 +609,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
-    function notifyRewardAmount(address _rewardToken, uint256 _reward)
+    function notifyRewardAmount(address _rewardToken, uint256 _reward, int256[] calldata _weights, uint256 periodId)
         external
         onlyDistribution(_rewardToken)
         updateReward(address(0), false)
@@ -620,7 +620,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
             token.distributor != address(0),
             "Reward distributor for token not set"
         );
-
+        
         IERC20(_rewardToken).safeTransferFrom(
             token.distributor,
             address(this),
