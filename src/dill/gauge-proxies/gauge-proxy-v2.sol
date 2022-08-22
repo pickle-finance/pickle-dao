@@ -7,22 +7,6 @@ import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-interface IGaugeMiddleware {
-    function addGauge(address _token, address _governance)
-        external
-        returns (address);
-}
-
-interface IVirtualGaugeMiddleware {
-    function addVirtualGauge(address _jar, address _governance)
-        external
-        returns (address);
-}
-
-interface IRootChainGaugeMiddleware {
-    function addRootChainGauge(uint256 chainId, address sidechainGaugeProxy) external returns (address);
-}
-
 interface iGaugeV2 {
     function notifyRewardAmount(
         address rewardToken,
@@ -217,9 +201,6 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     mapping(uint256 => int256) public totalWeight; // period id => TotalWeight
     mapping(uint256 => mapping(uint256 => bool)) public distributed;
     mapping(uint256 => uint256) public periodForDistribute; // dist id => which period id votes to use
-    IGaugeMiddleware public gaugeMiddleware;
-    IVirtualGaugeMiddleware public virtualGaugeMiddleware;
-    IRootChainGaugeMiddleware public rootChainGaugeMiddleware;
 
     struct delegateData {
         // delegated address
@@ -263,53 +244,6 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         periodForDistribute[_currentId] = _currentId;
         _chainIdCounter = 0;
         chainIdWeights[_chainIdCounter] = 1;
-    }
-
-    function addGaugeMiddleware(address _gaugeMiddleware) external {
-        require(
-            _gaugeMiddleware != address(0),
-            "gaugeMiddleware cannot set to zero"
-        );
-        require(
-            _gaugeMiddleware != address(gaugeMiddleware),
-            "current and new gaugeMiddleware are same"
-        );
-        require(msg.sender == governance, "!gov");
-        gaugeMiddleware = IGaugeMiddleware(_gaugeMiddleware);
-    }
-
-    function addVirtualGaugeMiddleware(address _virtualGaugeMiddleware)
-        external
-    {
-        require(
-            _virtualGaugeMiddleware != address(0),
-            "virtualGaugeMiddleware cannot set to zero"
-        );
-        require(
-            _virtualGaugeMiddleware != address(virtualGaugeMiddleware),
-            "current and new virtualGaugeMiddleware are same"
-        );
-        require(msg.sender == governance, "!gov");
-        virtualGaugeMiddleware = IVirtualGaugeMiddleware(
-            _virtualGaugeMiddleware
-        );
-    }
-
-    function addRootChainGaugeMiddleware(address _rootChainGaugeMiddleware)
-        external
-    {
-        require(
-            _rootChainGaugeMiddleware != address(0),
-            "virtualGaugeMiddleware cannot set to zero"
-        );
-        require(
-            _rootChainGaugeMiddleware != address(rootChainGaugeMiddleware),
-            "current and new rootChainGaugeMiddleware are same"
-        );
-        require(msg.sender == governance, "!gov");
-        rootChainGaugeMiddleware = IRootChainGaugeMiddleware(
-            _rootChainGaugeMiddleware
-        );
     }
 
     function setChainIdWeight(uint256 _chainId, uint256 weight) external {
@@ -525,21 +459,11 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
             _chainId > 0 && _chainId <= _chainIdCounter,
             "invalid chain id"
         );
-        require(
-            address(gaugeMiddleware) != address(0),
-            "cannot add new gauge without initializing gaugeMiddleware"
-        );
+        
         Gauge memory _gauge = gauges[_token];
         require(gauges[_token].gaugeAddress == address(0x0), "exists");
         
-
-        if (_chainId == 0) {
-            _gauge.gaugeAddress = gaugeMiddleware.addGauge(_token, governance);
-        } else {
-            require(gaugeAddress != address(0), "Invalid Gauge Address");
-            _gauge.gaugeAddress = gaugeAddress;
-        }
-
+        _gauge.gaugeAddress = gaugeAddress;
         tokensByChainId[_chainId].push(_token);
         _gauge.chainId = _chainId;
         _gauge.gaugeType = GaugeType.REGULAR;
@@ -548,30 +472,19 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     }
 
     // Add new token virtual gauge
-    function addVirtualGauge(address _token, address _jar, uint256 _chainId, address gaugeAddress) external {
+    function addVirtualGauge(address _token, uint256 _chainId, address gaugeAddress) external {
         require(msg.sender == governance, "!gov");
         require(
             _chainId > 0 && _chainId <= _chainIdCounter,
             "invalid chain id"
         );
-        require(
-            address(gaugeMiddleware) != address(0),
-            "cannot add new gauge without initializing gaugeMiddleware"
-        );
+        require(gaugeAddress != address(0), "Invalid Gauge Address");
+
         Gauge memory _gauge = gauges[_token];
 
         require(_gauge.gaugeAddress == address(0x0), "exists");
 
-        if (_chainId == 0) {
-            _gauge.gaugeAddress = virtualGaugeMiddleware.addVirtualGauge(
-                _jar,
-                governance
-            );
-        } else {
-            require(gaugeAddress != address(0), "Invalid Gauge Address");
-            _gauge.gaugeAddress = gaugeAddress;
-        }
-
+        _gauge.gaugeAddress = gaugeAddress;
         tokensByChainId[_chainId].push(_token);
         _gauge.chainId = _chainId;
         _gauge.gaugeType = GaugeType.VIRTUAL;
@@ -579,7 +492,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         _tokens.push(_token);
     }
 
-    function addNewSideChain(string calldata name, uint256 weight, uint256 chainId, address sidechainGaugeProxy) external {
+    function addNewSideChain(string calldata name, uint256 weight, address gaugeAddress) external {
         require(msg.sender == governance, "!gov");
         uint256 currentId = getCurrentPeriodId();
         require(
@@ -591,16 +504,15 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         chainIds[_chainIdCounter] = name;
         chainIdWeights[_chainIdCounter] = weight;
         
-        address newRootGauge = rootChainGaugeMiddleware.addRootChainGauge(chainId, sidechainGaugeProxy);
-        Gauge memory _gauge = gauges[newRootGauge];
+        Gauge memory _gauge = gauges[gaugeAddress];
 
-        _gauge.gaugeAddress = newRootGauge;
+        _gauge.gaugeAddress = gaugeAddress;
         _gauge.chainId = _chainIdCounter;
         _gauge.gaugeType = GaugeType.ROOT;
         
-        _tokens.push(newRootGauge);
+        _tokens.push(gaugeAddress);
         
-        emit NewGaugeType(_chainIdCounter, newRootGauge, name, weight);
+        emit NewGaugeType(_chainIdCounter, gaugeAddress, name, weight);
     }
 
     function delistGauge(address _token) external {

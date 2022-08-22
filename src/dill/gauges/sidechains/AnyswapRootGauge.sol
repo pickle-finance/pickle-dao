@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.1;
 
-import "../ProtocolGovernance.sol";
+import "../../ProtocolGovernance.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -18,7 +18,7 @@ interface IAnyswapBridger {
         uint256 periodId) external payable;
 }
 
-contract RootChainGaugeV2 is ProtocolGovernance, ReentrancyGuard {
+contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public constant PICKLE =
