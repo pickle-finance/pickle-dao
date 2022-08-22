@@ -20,7 +20,7 @@ interface IVirtualGaugeMiddleware {
 }
 
 interface IRootChainGaugeMiddleware {
-    function addRootChainGauge(uint256 chainId) external returns (address);
+    function addRootChainGauge(uint256 chainId, address sidechainGaugeProxy) external returns (address);
 }
 
 interface iGaugeV2 {
@@ -579,7 +579,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         _tokens.push(_token);
     }
 
-    function addNewSideChain(string calldata name, uint256 weight, uint256 chainId) external {
+    function addNewSideChain(string calldata name, uint256 weight, uint256 chainId, address sidechainGaugeProxy) external {
         require(msg.sender == governance, "!gov");
         uint256 currentId = getCurrentPeriodId();
         require(
@@ -591,7 +591,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         chainIds[_chainIdCounter] = name;
         chainIdWeights[_chainIdCounter] = weight;
         
-        address newRootGauge = rootChainGaugeMiddleware.addRootChainGauge(chainId);
+        address newRootGauge = rootChainGaugeMiddleware.addRootChainGauge(chainId, sidechainGaugeProxy);
         Gauge memory _gauge = gauges[newRootGauge];
 
         _gauge.gaugeAddress = newRootGauge;
@@ -702,15 +702,13 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
                 address _token = _tokens[i];
                 Gauge memory _gauge = gauges[_token];
-                GaugeType _gaugeType = _gauge.gaugeType;
-                address _gaugeAddress = _gauge.gaugeAddress;
 
-                if (_gaugeAddress == address(0) || _gauge.chainId > 0) continue;
+                if (_gauge.gaugeAddress == address(0) || _gauge.chainId > 0) continue;
                 
                 uint256 chainId = _gauge.chainId;
                 int256[] memory _weights = new int256[](0);
 
-                if (_gaugeType == GaugeType.ROOT) {
+                if (_gauge.gaugeType == GaugeType.ROOT) {
                     _weights = new int256[](tokensByChainId[chainId].length);
                     for (uint256 j = 0; j < _weights.length; i++) {
                         address token = tokensByChainId[chainId][j];
@@ -727,13 +725,13 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
                 if (_reward > 0) {
                     uint256 reward_ = uint256(_reward);
-                    PICKLE.safeApprove(_gaugeAddress, 0);
-                    PICKLE.safeApprove(_gaugeAddress, reward_);
-                    iGaugeV2(_gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, _weights, periodToUse);
+                    PICKLE.safeApprove(_gauge.gaugeAddress, 0);
+                    PICKLE.safeApprove(_gauge.gaugeAddress, reward_);
+                    iGaugeV2(_gauge.gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, _weights, periodToUse);
                 }
 
                 if (_reward < 0) {
-                    gaugeWithNegativeWeight[_gaugeAddress] += 1;
+                    gaugeWithNegativeWeight[_gauge.gaugeAddress] += 1;
                 }
                 distributed[distributionId][i] = true;
             }

@@ -4,9 +4,9 @@ pragma solidity ^0.8.1;
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import "../../ProtocolGovernance.sol";
-import {RootChainGaugeV2} from "../../gauge/RootChainGaugeV2.sol";
-import {VirtualGaugeV2} from "../../gauge/VirtualGaugeV2.sol";
-import {GaugeV2} from "../../gauge/GaugeV2.sol";
+import {RootChainGaugeV2} from "../../gauges/RootChainGaugeV2.sol";
+import {VirtualGaugeV2} from "../../gauges/VirtualGaugeV2.sol";
+import {GaugeV2} from "../../gauges/GaugeV2.sol";
 
 contract GaugeMiddleware is ProtocolGovernance, Initializable {
     address public gaugeProxy;
@@ -119,8 +119,8 @@ contract RootChainGaugeMiddleware is ProtocolGovernance, Initializable {
         gaugeProxy = _newgaugeProxy;
     }
 
-    function addRootChainGauge(uint256 chainId) external returns (address) {
+    function addRootChainGauge(uint256 chainId, address sidechainGaugeProxy) external returns (address) {
         require(msg.sender == gaugeProxy, "can only be called by gaugeProxy");
-        return address(new RootChainGaugeV2(anyswap, chainId));
+        return address(new RootChainGaugeV2(anyswap, chainId, sidechainGaugeProxy));
     }
 }
