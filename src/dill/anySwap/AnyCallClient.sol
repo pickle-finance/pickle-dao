@@ -170,7 +170,6 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
     using SafeERC20 for IERC20;
 
     address public distributor;
-    ISidechainGaugeProxy public sidechainGaugeProxy;
 
     // pausable control roles
     bytes32 public constant PAUSE_SWAPOUT_ROLE = keccak256("PAUSE_SWAPOUT_ROLE");
@@ -204,11 +203,9 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
     constructor(
         address _admin,
         address _callProxy,
-        address _distributor,
-        address _sidechainGaugeProxyReceiver
+        address _distributor
     ) AnycallClientBase(_admin, _callProxy) {
         distributor = _distributor;
-        sidechainGaugeProxy = ISidechainGaugeProxy(_sidechainGaugeProxyReceiver);
     }
 
     function setTokenPeers(
@@ -225,11 +222,6 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
     function setDistributor(address _distributor) external onlyAdmin {
         require(_distributor != address(0));
         distributor = _distributor;
-    }
-
-    function setSidechainGaugeProxy(address _sidechainGaugeProxyReceiver) external onlyAdmin {
-        require(_sidechainGaugeProxyReceiver != address(0));
-        sidechainGaugeProxy = ISidechainGaugeProxy(_sidechainGaugeProxyReceiver);
     }
 
     /// @dev Call by the user to submit a request for a cross chain interaction
@@ -335,7 +327,7 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
             require(IERC20(dstToken).balanceOf(address(this)) < amount, "Not enough balance or not enough minted");
 
             IERC20(dstToken).safeApprove(receiver, amount);
-            sidechainGaugeProxy.sendRewards(periodId, amount, weights);
+            ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
 
             emit LogSwapin(dstToken, sender, receiver, amount, fromChainId, weights);
         } else if (selector == 0xa35fe8bf) { // bytes4(keccak256('anyFallback(address,bytes)'))
