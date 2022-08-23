@@ -115,6 +115,12 @@ interface IAnycallV6Proxy {
         uint256 _toChainID,
         uint256 _flags
     ) external payable;
+
+    function calcSrcFees(
+        string calldata _appID,
+        uint256 _toChainID,
+        uint256 _dataLength
+    ) external view returns (uint256);
 }
 
 interface ISidechainGaugeProxy {
@@ -170,6 +176,9 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
     bytes32 public constant PAUSE_SWAPOUT_ROLE = keccak256("PAUSE_SWAPOUT_ROLE");
     bytes32 public constant PAUSE_SWAPIN_ROLE = keccak256("PAUSE_SWAPIN_ROLE");
     bytes32 public constant PAUSE_FALLBACK_ROLE = keccak256("PAUSE_FALLBACK_ROLE");
+
+    uint256 public ANYCALL_FLAGS = 2; // Fee on SRC (mainnet) chain
+    string public APP_ID = "0"; // Could be changed
 
     // associated tokens on each chain
     mapping(address => mapping(uint256 => address)) public tokenPeers;
@@ -229,7 +238,6 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         uint256 amount,
         address receiver,
         uint256 toChainId,
-        uint256 flags,
         int256[] memory weights,
         uint256 periodId
     ) external payable onlyDistributor whenNotPaused(PAUSE_SWAPOUT_ROLE) {
@@ -275,7 +283,7 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
             data,
             address(this),
             toChainId,
-            flags
+            ANYCALL_FLAGS
         );
 
         if (msg.value > 0) {
@@ -374,6 +382,32 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         }
 
         emit LogSwapoutFail(srcToken, from, receiver, amount, toChainId, weights);
+    }
+
+    function calcFees(        
+        address token,
+        uint256 amount,
+        address receiver,
+        uint256 toChainId,
+        int256[] memory weights,
+        uint256 periodId
+    ) external view returns(uint256) {
+        address dstToken = tokenPeers[token][toChainId];
+        require(dstToken != address(0), "AnycallClient: no dest token");
+
+        bytes memory data = abi.encodeWithSelector(
+            this.anyExecute.selector,
+            token,
+            dstToken,
+            amount,
+            msg.sender,
+            receiver,
+            toChainId,
+            weights,
+            periodId
+        );
+
+        return IAnycallV6Proxy(callProxy).calcSrcFees(APP_ID, toChainId, data.length);
     }
 
     function _getUnderlying(address token) internal returns (address) {

@@ -7,15 +7,24 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 
-interface IAnyswapBridger {
+interface IAnycallClient {
     function bridge(
         address token,
         uint256 amount,
         address receiver,
         uint256 toChainId,
-        uint256 flags,
         int256[] memory weights,
-        uint256 periodId) external payable;
+        uint256 periodId
+    ) external payable;
+
+    function calcFees(
+        address token,
+        uint256 amount,
+        address receiver,
+        uint256 toChainId,
+        int256[] memory weights,
+        uint256 periodId
+    ) external view returns(uint256);
 }
 
 contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
@@ -32,7 +41,7 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     //Reward addresses
     address[] public rewardTokens;
 
-    IAnyswapBridger public anyswapBridger;
+    IAnycallClient public anycallClient;
 
     // reward token details
     struct rewardTokenDetail {
@@ -65,8 +74,8 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _anyswapBridger, uint256 _chainId, address _sidechainGaugeProxy) {
-        anyswapBridger = IAnyswapBridger(_anyswapBridger);
+    constructor(address _anycallClient, uint256 _chainId, address _sidechainGaugeProxy) {
+        anycallClient = IAnycallClient(_anycallClient);
         chainId = _chainId;
         governance = msg.sender;
         sidechainGaugeProxy = _sidechainGaugeProxy;
@@ -170,17 +179,30 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
 
         token.lastUpdateTime = block.timestamp;
         token.periodFinish = block.timestamp + DURATION;
-        anyswapBridger.bridge(
+
+        uint256 fee = anycallClient.calcFees(
             address(PICKLE),
             _reward,
             sidechainGaugeProxy,
             chainId,
-            2,
+            _weights,
+            periodId
+        );
+
+        require(fee <= address(this).balance, "insufficient fee");
+
+        anycallClient.bridge{value: fee}(
+            address(PICKLE),
+            _reward,
+            sidechainGaugeProxy,
+            chainId,
             _weights,
             periodId
         );
         rewardTokenDetails[_rewardToken] = token;
     }
+
+    receive() external payable {}
 
     /* ========== EVENTS ========== */
     event RewardAdded(uint256 reward);

@@ -459,7 +459,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
             _chainId > 0 && _chainId <= _chainIdCounter,
             "invalid chain id"
         );
-        
+
         Gauge memory _gauge = gauges[_token];
         require(gauges[_token].gaugeAddress == address(0x0), "exists");
         
@@ -622,7 +622,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
                 if (_gauge.gaugeType == GaugeType.ROOT) {
                     _weights = new int256[](tokensByChainId[chainId].length);
-                    for (uint256 j = 0; j < _weights.length; i++) {
+                    for (uint256 j = 0; j < _weights.length; j++) {
                         address token = tokensByChainId[chainId][j];
                         if (gauges[token].gaugeAddress == address(0)) {
                             _weights[j] = 0;
