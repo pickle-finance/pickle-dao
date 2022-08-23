@@ -6,23 +6,12 @@ import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-interface IGaugeMiddleware {
-    function addGauge(address _token, address _governance)
-        external
-        returns (address);
-}
-
-interface IVirtualGaugeMiddleware {
-    function addVirtualGauge(address _jar, address _governance)
-        external
-        returns (address);
-}
-
 interface iGaugeV2 {
     function notifyRewardAmount(
         address rewardToken,
         uint256 rewards,
-        int256[] memory weights
+        int256[] memory weights,
+        uint256 periodId
     ) external;
 }
 
@@ -45,9 +34,6 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
     mapping(address => Gauge) public gauges;
     mapping(uint256 => uint256) public periodRewardAmount;
     mapping(uint256 => int256[]) public periodGaugeWeights;
-
-    IGaugeMiddleware public gaugeMiddleware;
-    IVirtualGaugeMiddleware public virtualGaugeMiddleware;
 
     struct Queue {
         uint[] data;
@@ -96,67 +82,26 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
         bridgeClient = _bridgeClient;
     }
 
-    function addGaugeMiddleware(address _gaugeMiddleware) external {
-        require(
-            _gaugeMiddleware != address(0),
-            "gaugeMiddleware cannot set to zero"
-        );
-        require(
-            _gaugeMiddleware != address(gaugeMiddleware),
-            "current and new gaugeMiddleware are same"
-        );
-        require(msg.sender == governance, "!gov");
-        gaugeMiddleware = IGaugeMiddleware(_gaugeMiddleware);
-    }
-
-    function addVirtualGaugeMiddleware(address _virtualGaugeMiddleware)
-        external
-    {
-        require(
-            _virtualGaugeMiddleware != address(0),
-            "virtualGaugeMiddleware cannot set to zero"
-        );
-        require(
-            _virtualGaugeMiddleware != address(virtualGaugeMiddleware),
-            "current and new virtualGaugeMiddleware are same"
-        );
-        require(msg.sender == governance, "!gov");
-        virtualGaugeMiddleware = IVirtualGaugeMiddleware(
-            _virtualGaugeMiddleware
-        );
-    }
-
     // Add new token gauge
-    function addGauge(address _token) external {
+    function addGauge(address _token, address _gaugeAddress) external {
         require(msg.sender == governance, "!gov");
-        require(
-            address(gaugeMiddleware) != address(0),
-            "cannot add new gauge without initializing gaugeMiddleware"
-        );
         Gauge memory _gauge = gauges[_token];
         require(gauges[_token].gaugeAddress == address(0x0), "exists");
         
-        _gauge.gaugeAddress = gaugeMiddleware.addGauge(_token, governance);
+        _gauge.gaugeAddress = _gaugeAddress;
         _gauge.gaugeType = GaugeType.REGULAR;
         
         _tokens.push(_token);
     }
 
     // Add new token virtual gauge
-    function addVirtualGauge(address _token, address _jar) external {
+    function addVirtualGauge(address _token, address _jar, address _gaugeAddress) external {
         require(msg.sender == governance, "!gov");
-        require(
-            address(gaugeMiddleware) != address(0),
-            "cannot add new gauge without initializing gaugeMiddleware"
-        );
         Gauge memory _gauge = gauges[_token];
 
         require(_gauge.gaugeAddress == address(0x0), "exists");
 
-        _gauge.gaugeAddress = virtualGaugeMiddleware.addVirtualGauge(
-            _jar,
-            governance
-        );
+        _gauge.gaugeAddress = _gaugeAddress;
         _gauge.gaugeType = GaugeType.VIRTUAL;
 
         _tokens.push(_token);
@@ -197,7 +142,7 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
                     uint256 reward_ = uint256(_reward);
                     PICKLE.safeApprove(_gaugeAddress, 0);
                     PICKLE.safeApprove(_gaugeAddress, reward_);
-                    iGaugeV2(_gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, new int256[](0));
+                    iGaugeV2(_gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, new int256[](0), periodToDistribute);
                 }
             }
         }
