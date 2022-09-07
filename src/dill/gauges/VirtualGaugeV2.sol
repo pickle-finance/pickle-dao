@@ -272,14 +272,13 @@ contract VirtualGaugeV2 is
         onlyGov
     {
         rewardTokenDetail memory token;
-        token.isActive = true;
-        token.index = rewardTokens.length;
-        token.distributor = _distributionForToken;
-        token.rewardRate = 0;
-        token.rewardPerTokenStored = 0;
-        token.periodFinish = 0;
+        rewardTokenDetails[_rewardToken].isActive = true;
+        rewardTokenDetails[_rewardToken].index = rewardTokens.length;
+        rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
+        rewardTokenDetails[_rewardToken].rewardRate = 0;
+        rewardTokenDetails[_rewardToken].rewardPerTokenStored = 0;
+        rewardTokenDetails[_rewardToken].periodFinish = 0;
 
-        rewardTokenDetails[_rewardToken] = token;
         rewardTokens.push(_rewardToken);
     }
 
@@ -586,11 +585,11 @@ contract VirtualGaugeV2 is
         );
 
         if (block.timestamp >= token.periodFinish) {
-            token.rewardRate = _reward / DURATION;
+            rewardTokenDetails[_rewardToken].rewardRate = _reward / DURATION;
         } else {
             uint256 remaining = token.periodFinish - block.timestamp;
             uint256 leftover = remaining * token.rewardRate;
-            token.rewardRate = (_reward + leftover) / DURATION;
+            rewardTokenDetails[_rewardToken].rewardRate = (_reward + leftover) / DURATION;
         }
 
         // Ensure the provided reward amount is not more than the balance in the contract.
@@ -605,9 +604,8 @@ contract VirtualGaugeV2 is
 
         emit RewardAdded(_reward);
 
-        token.lastUpdateTime = block.timestamp;
-        token.periodFinish = block.timestamp + DURATION;
-        rewardTokenDetails[_rewardToken] = token;
+        rewardTokenDetails[_rewardToken].lastUpdateTime = block.timestamp;
+        rewardTokenDetails[_rewardToken].periodFinish = block.timestamp + DURATION;
     }
 
     function setMultipliers(uint256 _lock_max_multiplier) external onlyGov {
