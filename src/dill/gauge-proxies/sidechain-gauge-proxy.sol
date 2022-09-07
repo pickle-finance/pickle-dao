@@ -2,9 +2,11 @@
 pragma solidity ^0.8.1;
 
 import "../ProtocolGovernance.sol";
-import "@openzeppelin/contracts/interfaces/IERC20.sol";
+// import "@openzeppelin/contracts/interfaces/IERC20Upgradeable.sol";
+// import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
 interface iGaugeV2 {
     function notifyRewardAmount(
@@ -16,57 +18,34 @@ interface iGaugeV2 {
 }
 
 contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
-    using SafeERC20 for IERC20;
+    using SafeERC20Upgradeable for IERC20Upgradeable;
 
-    IERC20 public PICKLE;
+    IERC20Upgradeable public PICKLE;
 
     address[] internal _tokens;
     address bridgeClient;
 
-    enum GaugeType { REGULAR, VIRTUAL }
+    enum GaugeType {
+        REGULAR,
+        VIRTUAL
+    }
 
     struct Gauge {
         GaugeType gaugeType;
         address gaugeAddress;
     }
 
-    // token => gauge
     mapping(address => Gauge) public gauges;
     mapping(uint256 => uint256) public periodRewardAmount;
     mapping(uint256 => int256[]) public periodGaugeWeights;
 
-    struct Queue {
-        uint[] data;
-        uint front;
-        uint back;
+    struct periodData {
+        uint256 amount;
+        int256[] weights;
     }
-
-    /// @dev the number of elements stored in the queue.
-    function length(Queue storage q) view internal returns (uint) {
-        return q.back - q.front;
-    }
-    /// @dev the number of elements this queue can hold
-    function capacity(Queue storage q) view internal returns (uint) {
-        return q.data.length - 1;
-    }
-    /// @dev push a new element to the back of the queue
-    function pushToPeriodQueue(Queue storage q, uint data) internal
-    {
-        if ((q.back + 1) % q.data.length == q.front)
-            return; // throw;
-        q.data[q.back] = data;
-        q.back = (q.back + 1) % q.data.length;
-    }
-    /// @dev remove and return the element at the front of the queue
-    function popFromPeriodQueue(Queue storage q) internal returns (uint r)
-    {
-        require(q.back > q.front, "Back <= Front");
-        r = q.data[q.front];
-        delete q.data[q.front];
-        q.front = (q.front + 1) % q.data.length;
-    }
-
-    Queue periodQueue;
+    mapping(uint256 => periodData) public periods; // periodID => periodData
+    mapping(uint256 => bool) public distributedForPeriod;
+    uint256 public periodToDistribute;
 
     function tokens() external view returns (address[] memory) {
         return _tokens;
@@ -76,33 +55,40 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
         return gauges[_token];
     }
 
-    function initialize(address pickleToken, address _bridgeClient) public initializer {
+    function initialize(
+        address pickleToken,
+        address _bridgeClient,
+        uint256 _periodToDistribute
+    ) public initializer {
+        periodToDistribute = _periodToDistribute;
         governance = msg.sender;
-        PICKLE = IERC20(pickleToken);
+        PICKLE = IERC20Upgradeable(pickleToken);
         bridgeClient = _bridgeClient;
     }
 
     // Add new token gauge
     function addGauge(address _token, address _gaugeAddress) external {
         require(msg.sender == governance, "!gov");
-        Gauge memory _gauge = gauges[_token];
         require(gauges[_token].gaugeAddress == address(0x0), "exists");
-        
-        _gauge.gaugeAddress = _gaugeAddress;
-        _gauge.gaugeType = GaugeType.REGULAR;
-        
+
+        gauges[_token].gaugeAddress = _gaugeAddress;
+        gauges[_token].gaugeType = GaugeType.REGULAR;
+
         _tokens.push(_token);
     }
 
     // Add new token virtual gauge
-    function addVirtualGauge(address _token, address _jar, address _gaugeAddress) external {
+    function addVirtualGauge(
+        address _token,
+        address _jar,
+        address _gaugeAddress
+    ) external {
         require(msg.sender == governance, "!gov");
-        Gauge memory _gauge = gauges[_token];
 
-        require(_gauge.gaugeAddress == address(0x0), "exists");
+        require(gauges[_token].gaugeAddress == address(0x0), "exists");
 
-        _gauge.gaugeAddress = _gaugeAddress;
-        _gauge.gaugeType = GaugeType.VIRTUAL;
+        gauges[_token].gaugeAddress = _gaugeAddress;
+        gauges[_token].gaugeType = GaugeType.VIRTUAL;
 
         _tokens.push(_token);
     }
@@ -114,13 +100,20 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
             msg.sender == governance,
             "GaugeProxyV2: only governance can distribute"
         );
-
-        uint256 periodToDistribute = periodQueue.data[periodQueue.front];
-
-        int256[] memory _weights = periodGaugeWeights[periodToDistribute];
+        uint256 _periodToDistribute = periodToDistribute;
+        require(
+            distributedForPeriod[_periodToDistribute] == false,
+            "Already distributed for given period"
+        );
+        require(
+            periods[_periodToDistribute].weights.length == 0 &&
+                periods[_periodToDistribute].amount == 0,
+            "All period distribution compleated"
+        );
+        int256[] memory _weights = periods[periodToDistribute].weights;
         int256 _totalWeight = 0;
 
-        int256 _balance = int256(periodRewardAmount[periodToDistribute]);
+        int256 _balance = int256(periods[periodToDistribute].amount);
 
         for (uint256 i = 0; i < _weights.length; i++) {
             _totalWeight += (_weights[i] > 0 ? _weights[i] : -_weights[i]);
@@ -132,33 +125,48 @@ contract SidechainGaugeProxy is ProtocolGovernance, Initializable {
 
                 address _token = _tokens[i];
                 Gauge memory _gauge = gauges[_token];
-                
+
                 address _gaugeAddress = _gauge.gaugeAddress;
 
-                int256 _reward = (_balance * _weights[i]) /
-                    _totalWeight;
+                int256 _reward = (_balance * _weights[i]) / _totalWeight;
 
                 if (_reward > 0) {
                     uint256 reward_ = uint256(_reward);
                     PICKLE.safeApprove(_gaugeAddress, 0);
                     PICKLE.safeApprove(_gaugeAddress, reward_);
-                    iGaugeV2(_gaugeAddress).notifyRewardAmount(address(PICKLE), reward_, new int256[](0), periodToDistribute);
+                    iGaugeV2(_gaugeAddress).notifyRewardAmount(
+                        address(PICKLE),
+                        reward_,
+                        new int256[](0),
+                        _periodToDistribute
+                    );
                 }
             }
         }
         if (_tokens.length == _end) {
-            popFromPeriodQueue(periodQueue);
+            distributedForPeriod[_periodToDistribute] = true;
+            periodToDistribute += 1;
         }
     }
 
-    function sendRewards(uint256 periodId, uint256 amount, int256[] memory _weights) external {
+    function sendRewards(
+        uint256 _periodId,
+        uint256 _amount,
+        int256[] memory _weights
+    ) external {
         require(msg.sender == bridgeClient, "!bridgeClient");
         require(_weights.length == _tokens.length, "invalid weights length");
+        require(
+            distributedForPeriod[_periodId] == false,
+            "Already distributed for given period"
+        );
+        periodData memory period = periods[periodToDistribute];
+        require(
+            period.weights.length == 0 && period.amount == 0,
+            "already added reward for period"
+        );
 
-        PICKLE.safeTransferFrom(msg.sender, address(this), amount);
-        
-        pushToPeriodQueue(periodQueue, periodId);
-        periodRewardAmount[periodId] = amount;
-        periodGaugeWeights[periodId] = _weights;
+        periods[_periodId].amount = _amount;
+        periods[_periodId].weights = _weights;
     }
 }

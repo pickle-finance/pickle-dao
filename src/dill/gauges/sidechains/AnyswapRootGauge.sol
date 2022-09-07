@@ -6,8 +6,9 @@ import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-
 interface IAnycallClient {
+    function testWoring(uint256 flag) external returns (uint256 f);
+
     function bridge(
         address token,
         uint256 amount,
@@ -24,14 +25,18 @@ interface IAnycallClient {
         uint256 toChainId,
         int256[] memory weights,
         uint256 periodId
-    ) external view returns(uint256);
+    ) external view returns (uint256);
+}
+
+interface IAnyToken {
+    function deposit(uint256 amount, address to) external returns (uint256);
 }
 
 contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public constant PICKLE =
-        IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5);
+        IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5); 
 
     // Constant for various precisions
     uint256 public constant DURATION = 7 days;
@@ -42,6 +47,7 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     address[] public rewardTokens;
 
     IAnycallClient public anycallClient;
+    IAnyToken public anyToken;
 
     // reward token details
     struct rewardTokenDetail {
@@ -74,7 +80,14 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _anycallClient, uint256 _chainId, address _sidechainGaugeProxy) {
+    constructor(
+        address _anycallClient,
+        address _anyToken,
+        uint256 _chainId,
+        address _sidechainGaugeProxy
+    ) {
+        // todo side chain id?
+        anyToken = IAnyToken(_anyToken);
         anycallClient = IAnycallClient(_anycallClient);
         chainId = _chainId;
         governance = msg.sender;
@@ -140,10 +153,12 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
-    function notifyRewardAmount(address _rewardToken, uint256 _reward, int256[] calldata _weights, uint256 periodId)
-        external
-        onlyDistribution(_rewardToken)
-    {
+    function notifyRewardAmount(
+        address _rewardToken,
+        uint256 _reward,
+        int256[] calldata _weights,
+        uint256 periodId
+    ) external payable onlyDistribution(_rewardToken) {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
         require(
@@ -151,54 +166,35 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
             "Reward distributor for token not available"
         );
 
-        IERC20(_rewardToken).safeTransferFrom(
+        IERC20(_rewardToken).transferFrom(
             token.distributor,
             address(this),
             _reward
         );
-
-        if (block.timestamp >= token.periodFinish) {
-            token.rewardRate = _reward / DURATION;
-        } else {
-            uint256 remaining = token.periodFinish - block.timestamp;
-            uint256 leftover = remaining * token.rewardRate;
-            token.rewardRate = (_reward + leftover) / DURATION;
-        }
-
-        // Ensure the provided reward amount is not more than the balance in the contract.
-        // This keeps the reward rate in the right range, preventing overflows due to
-        // very high values of rewardRate in the earned and rewardsPerToken functions;
-        // Reward + leftover must be less than 2^256 / 10^18 to avoid overflow.
-        uint256 balance = IERC20(_rewardToken).balanceOf(address(this));
-        require(
-            token.rewardRate <= balance / DURATION,
-            "Provided reward too high"
-        );
-
         emit RewardAdded(_reward);
 
-        token.lastUpdateTime = block.timestamp;
-        token.periodFinish = block.timestamp + DURATION;
-
         uint256 fee = anycallClient.calcFees(
-            address(PICKLE),
+            address(anyToken),
             _reward,
             sidechainGaugeProxy,
             chainId,
             _weights,
             periodId
         );
+        require(fee <= msg.value, "insufficient fee");
 
-        require(fee <= address(this).balance, "insufficient fee");
+        PICKLE.safeApprove(address(anycallClient), 0);
+        PICKLE.safeApprove(address(anycallClient), _reward);
 
         anycallClient.bridge{value: fee}(
-            address(PICKLE),
+            address(anyToken),
             _reward,
             sidechainGaugeProxy,
             chainId,
             _weights,
             periodId
         );
+
         rewardTokenDetails[_rewardToken] = token;
     }
 
