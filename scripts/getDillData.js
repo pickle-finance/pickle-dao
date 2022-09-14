@@ -1,8 +1,11 @@
 const { ethers } = require("ethers");
-const {abi, DillAddress} = require("./config");
+const { abi, DillAddress } = require("./config");
+const fs = require("fs");
 
 let _lastProcessedBlock = 0; // to be in DB
-let provider = ethers.providers.getDefaultProvider();
+let provider = ethers.providers.getDefaultProvider(
+  `${process.env.INFURA_RPC_URL}`
+);
 
 const DillContract = new ethers.Contract(DillAddress, abi, provider); // change signer
 /**
@@ -12,7 +15,7 @@ const DillContract = new ethers.Contract(DillAddress, abi, provider); // change 
 const getLatestBlock = async () => {
   let latestBlock;
   try {
-    latestBlock = await provider.getBlock('latest');
+    latestBlock = await provider.getBlock("latest");
     return latestBlock.number;
   } catch (error) {
     console.error(error);
@@ -37,7 +40,7 @@ const getLastProcessedBlock = () => {
 
 // function to store last processed block
 /**
- * 
+ *
  * @param {Number} block last processed block
  */
 const setLastProcessedBlock = (block) => {
@@ -132,11 +135,9 @@ const getDillBalances = async (pickleBalanceMap, block) => {
   for (let i = 0; i < pickleBalanceMap.size; i++) {
     const key = itrator.next().value;
     const balance = await DillContract.balanceOfAt(key, block);
-    Number(balance)
-      ? dillBalance.set(key, {
-          balance: balance,
-        })
-      : "";
+    dillBalance.set(key, {
+      balance: balance,
+    });
   }
   return dillBalance;
 };
@@ -161,13 +162,13 @@ const main = async () => {
 
         // get all dill holders
         pickleBalance = processEventsData(depositMap, withdrawMap);
-    
+
         // get dill balances
-        dillBalances = await getDillBalances(pickleBalance, latestBlock); 
-        console.log(
-          JSON.stringify([...dillBalances], null, 2)  // store in DB
-        );
-        
+        dillBalances = await getDillBalances(pickleBalance, latestBlock);
+        const dillBalancesData = JSON.stringify([...dillBalances], null, 2);
+
+        fs.writeFileSync("DILLBalances.json", dillBalancesData); // in future store this in DB
+
         setLastProcessedBlock(latestBlock);
       } else {
         await delay(2000); // 2 seconds delay for infura call/second issue
