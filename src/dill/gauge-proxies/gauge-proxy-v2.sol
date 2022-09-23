@@ -6,6 +6,7 @@ import "../ProtocolGovernance.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "erc721a/contracts/ERC721A.sol";
 
 interface iGaugeV2 {
     function notifyRewardAmount(
@@ -221,6 +222,17 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     }
     mapping(address => address[]) public delegatedAddresses;
     mapping(address => delegateData) public delegations;
+
+    //store nft token instance
+    ERC721A public nftToken;
+    //mapping of user address to stake details
+    mapping(address => LockedStake[]) private _lockedStakes;
+    struct LockedStake {
+        uint256 start_timestamp;
+        uint256 liquidity;
+        uint256 ending_timestamp;
+        bool isPermanentlyLocked;
+    }
 
     function getCurrentPeriodId() public view returns (uint256) {
         return
@@ -693,6 +705,50 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         }
     }
 
+    // add Picklenft contract
+    function setNftToken(address _tokenAddress) external {
+        require(msg.sender == governance, "gauge-proxy-v2.sol : This operation can only perdorm by governance");
+        nftToken = ERC721A(_tokenAddress)
+    }
+
+    // deposit and lock assets in the contract 
+    function depositAndLock(
+        uint256 tokenId,
+        uint256 secs,
+        bool isPermanentlyLocked
+    ) external {
+        _deposit(
+            tokenId,
+            msg.sender,
+            secs,
+            block.timestamp,
+            isPermanentlyLocked
+        );
+    }
+
+    function _deposit(
+        uint256 tokenId,
+        address account,
+        uint256 secs,
+        uint256 start_timestamp,
+        bool isPermanentlyLocked
+    ) internal {
+        require(tokenId > 0, "gauge-proxy-v2 : token id Can't be negative");
+        _lockedStakes[account].push(
+            LockedStake(
+                start_timestamp,
+                amount,
+                start_timestamp + secs,
+                isPermanentlyLocked
+            )
+        );
+        address owner = nftToken.ownerOf(tokenId);
+        require(msg.sender == owner, "gauge-proxy-v2 : You are not owner of the nft");
+        nftToken.approve(address(this), tokenId);
+        nftToken.transferFrom(account, address(this), tokenId);
+        emit Staked(account, tokenId, secs, _lockedStakes[account].length - 1);
+    }
+
     event NewGaugeType(
         uint256 gaugeTypeId,
         address indexed rootGauge,
@@ -700,4 +756,5 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         uint256 weight
     );
     event GaugeTypeWeightUpdated(uint256 indexed gaugeTypeId, uint256 weight);
+    event StakedNft(address account, uint256 tokenId, uint secs, uint256 index)
 }
