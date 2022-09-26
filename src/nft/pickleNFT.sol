@@ -12,9 +12,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract PickleNFT is ERC721A, Ownable{
 
     string private baseTokenUri;
-    mapping(uint256 => uint8) tokenLevel;
+    mapping(uint256 => uint256) tokenLevel;
 
-    event TokenLevelUpdate(uint256 tokenId, level);
+    event TokenLevelUpdate(uint256 tokenId, uint256 level);
 
     constructor() ERC721A("Pickle", "PFP"){
 
@@ -62,8 +62,8 @@ contract PickleNFT is ERC721A, Ownable{
     }
 
     function setTokenLevel(uint256 _tokenId, uint256 _level) external onlyOwner {
-        require(_level > 0 , "PickleNFT : Level varies between 1 to 100";)
-        require(_level < 101 , "PickleNFT : Level varies between 1 to 100";)
+        require(_level > 0 , "PickleNFT : Level varies between 1 to 100");
+        require(_level < 101 , "PickleNFT : Level varies between 1 to 100");
         tokenLevel[_tokenId] = _level;
         emit TokenLevelUpdate(_tokenId, _level);
     }

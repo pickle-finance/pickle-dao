@@ -226,12 +226,11 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     //store nft token instance
     ERC721A public nftToken;
     //mapping of user address to stake details
-    mapping(address => LockedStake[]) private _lockedStakes;
+    mapping(address => LockedStake[]) public _lockedStakes;
+
     struct LockedStake {
-        uint256 start_timestamp;
-        uint256 liquidity;
+        uint256 tokenId;
         uint256 ending_timestamp;
-        bool isPermanentlyLocked;
     }
 
     function getCurrentPeriodId() public view returns (uint256) {
@@ -704,15 +703,16 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     // deposit and lock assets in the contract 
     function depositAndLock(
         uint256 tokenId,
-        uint256 secs,
-        bool isPermanentlyLocked
+        uint256 secs
     ) external {
+        require(tokenId > 0, "gauge-proxy-v2 : token id Can't be negative");
+
+        require(block.timestamp >= nftCliffDuration, "gauge-proxy-v2: staking duration should greater then cliffDuration");
         _deposit(
             tokenId,
             msg.sender,
             secs,
             block.timestamp,
-            isPermanentlyLocked
         );
     }
 
@@ -720,25 +720,40 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         uint256 tokenId,
         address account,
         uint256 secs,
-        uint256 start_timestamp,
-        bool isPermanentlyLocked
+        uint256 start_timestamp
     ) internal {
-        require(tokenId > 0, "gauge-proxy-v2 : token id Can't be negative");
+        //Only staked when user didn't have any staked nft
+        require(_lockedStakes[account].ending_timestamp != 0, "gauge-proxy-v2 : User already stacked a nft");
         _lockedStakes[account].push(
             LockedStake(
-                start_timestamp,
-                amount,
+                tokenId,
                 start_timestamp + secs,
-                isPermanentlyLocked
             )
         );
         address owner = nftToken.ownerOf(tokenId);
         require(msg.sender == owner, "gauge-proxy-v2 : You are not owner of the nft");
-        nftToken.approve(address(this), tokenId);
         nftToken.transferFrom(account, address(this), tokenId);
-        emit Staked(account, tokenId, secs, _lockedStakes[account].length - 1);
+        emit StakedNft(account, tokenId, secs, _lockedStakes[account].length - 1);
     }
 
+    function withdraw(uint256 tokenId){
+        //Checking if stacked or not
+        require(_lockedStakes[account].ending_timestamp == 0, "gauge-proxy-v2 : User don't have stacked a nft");
+        require(_lockedStakes[msg.sender].ending_timestamp > block.timestamp, "guage-proxy-v2 : Can't withdraw before locked staked");
+        nftToken.approve(account, tokenId);
+        nftToken.safeTransferFrom(address(this), account, tokenId);
+        delete _lockedStakes[msg.sender];
+        emit Withdraw(msg.sender, tokenId);
+    }
+
+    function getTokenLevel(address account) external view returns(uint256){
+        uint256 tokenId = _lockedStakes[account].tokenId;
+        return nftToken.getTokenLevel(tokenId);
+    }
+
+    function isStaked(address account) external view returns(bool){
+        return _lockedStakes[account].ending_timestamp > 0 ? true : false;
+    }    
     event NewGaugeType(
         uint256 gaugeTypeId,
         address indexed rootGauge,
@@ -747,4 +762,5 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     );
     event GaugeTypeWeightUpdated(uint256 indexed gaugeTypeId, uint256 weight);
     event StakedNft(address account, uint256 tokenId, uint secs, uint256 index)
+    event Withdraw (address account, uint256 tokenId);
 }
