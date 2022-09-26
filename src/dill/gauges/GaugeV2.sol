@@ -78,7 +78,8 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         uint256 lock_multiplier;
         bool isPermanentlyLocked;
     }
-
+    //Instance of gaugeProxy
+    IgaugeProxy public gaugeProxy;
     /* ========== MODIFIERS ========== */
 
     modifier onlyDistribution(address _token) {
@@ -358,7 +359,15 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
             _MultiplierPrecision;
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
-        return dillBoostedDerivedBal + lockBoostedDerivedBal;
+        uint256 nftBoostedDerivedBalance = 0;
+        if(gaugeProxy.isStaked(account)){
+            uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
+            uint256 nftLockMultiplier = (lockMaxMultiplier*tokenLevel)/100;
+            uint256 liquidity = thisStake.liquidity;
+            nftBoostedDerivedBalance = (liquidity * nftLockMultiplier) /
+                _MultiplierPrecision;
+        }
+        return dillBoostedDerivedBal + lockBoostedDerivedBal + nftBoostedDerivedBalance;
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */
@@ -679,6 +688,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         );
         lockMaxMultiplier = _lock_max_multiplier;
         emit LockedStakeMaxMultiplierUpdated(lockMaxMultiplier);
+    }
+
+    function setGaugeProxy(address _gaugeProxy) external onlyGov {
+        require(_gaugeProxy != address(0), "Address Can't be null");
+        gaugeProxy = GaugeProxy(_gaugeProxy);
     }
 
     function setMaxRewardsDuration(uint256 _lockTimeForMaxMultiplier)
