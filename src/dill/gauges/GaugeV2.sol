@@ -7,6 +7,12 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+interface IGaugeProxyV2 {
+    function isStaked(address account) external view returns(bool);
+    function getTokenLevel(address account) external view returns(uint256);
+    function isBoostable(address account) external view returns(bool);
+}
+
 contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -79,7 +85,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         bool isPermanentlyLocked;
     }
     //Instance of gaugeProxy
-    IgaugeProxy public gaugeProxy;
+    IGaugeProxyV2 public gaugeProxy;
     /* ========== MODIFIERS ========== */
 
     modifier onlyDistribution(address _token) {
@@ -135,9 +141,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _token, address _governance) {
+    constructor(address _token, address _governance, address _gaugeProxy) {
         TOKEN = IERC20(_token);
         governance = _governance;
+        gaugeProxy = IGaugeProxyV2(_gaugeProxy);
     }
 
     /* ========== VIEWS ========== */
@@ -360,9 +367,9 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         uint256 nftBoostedDerivedBalance = 0;
-        if(gaugeProxy.isStaked(account)){
+        if(gaugeProxy.isStaked(account) && gaugeProxy.isBoostable()){
             uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
-            uint256 nftLockMultiplier = (lockMaxMultiplier*tokenLevel)/100;
+            uint256 nftLockMultiplier = (lockMaxMultiplier - (10e17) * tokenLevel) / 100;
             uint256 liquidity = thisStake.liquidity;
             nftBoostedDerivedBalance = (liquidity * nftLockMultiplier) /
                 _MultiplierPrecision;
@@ -692,7 +699,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     function setGaugeProxy(address _gaugeProxy) external onlyGov {
         require(_gaugeProxy != address(0), "Address Can't be null");
-        gaugeProxy = GaugeProxy(_gaugeProxy);
+        gaugeProxy = IGaugeProxyV2(_gaugeProxy);
     }
 
     function setMaxRewardsDuration(uint256 _lockTimeForMaxMultiplier)
