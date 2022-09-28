@@ -367,11 +367,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         uint256 nftBoostedDerivedBalance = 0;
-        if(gaugeProxy.isStaked(account) && gaugeProxy.isBoostable()){
+        if(gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)){
             uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
             uint256 nftLockMultiplier = (lockMaxMultiplier - (10e17) * tokenLevel) / 100;
-            uint256 liquidity = thisStake.liquidity;
-            nftBoostedDerivedBalance = (liquidity * nftLockMultiplier) /
+            nftBoostedDerivedBalance = (thisStake.liquidity * nftLockMultiplier) /
                 _MultiplierPrecision;
         }
         return dillBoostedDerivedBal + lockBoostedDerivedBal + nftBoostedDerivedBalance;
