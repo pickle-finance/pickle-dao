@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.1;
 
-import "erc721a/contracts/ERC721A.sol";
+import "./ERC721A.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
@@ -69,7 +69,7 @@ contract PickleNFT is ERC721A, Ownable{
     }
 
     function getTokenLevel(uint256 _tokenId) external view returns(uint256) {
-        require(_exists(tokenId), "PickleNFT : Level query for nonexistent token");
+        require(_exists(_tokenId), "PickleNFT : Level query for nonexistent token");
         return tokenLevel[_tokenId];
     }
 
