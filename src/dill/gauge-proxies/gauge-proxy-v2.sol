@@ -220,7 +220,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable, ERC721A__IERC721Rece
         // Period => Boolean (if delegate address can vote in that period)
         mapping(uint256 => bool) blockDelegate;
     }
-
+    mapping(address => address[]) public delegatedAddresses;
     mapping(address => delegateData) public delegations;
 
     //store nft token instance
@@ -422,6 +422,10 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable, ERC721A__IERC721Rece
 
         uint256 currentPeriodId = getCurrentPeriodId();
 
+        if (_delegate.delegate != _delegateAddress) {
+            delegatedAddresses[_delegateAddress].push(msg.sender);
+        }
+
         address currentDelegate = _delegate.delegate;
         _delegate.delegate = _delegateAddress;
         _delegate.prevDelegate = currentDelegate;
@@ -437,9 +441,10 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable, ERC721A__IERC721Rece
     }
 
     function voteFor(
-        address _owner,
         address[] calldata _tokenVote,
-        int256[] calldata _weights
+        int256[] calldata _weights,
+        uint256 _start,
+        uint256 _end
     ) external {
         require(
             _tokenVote.length == _weights.length,
@@ -448,26 +453,31 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable, ERC721A__IERC721Rece
 
         uint256 currentId = getCurrentPeriodId();
         require(currentId > 0, "Voting not started yet");
-        delegateData storage _delegate = delegations[_owner];
-        require(
-            (_delegate.delegate == msg.sender &&
-                currentId > _delegate.updatePeriodId) ||
-                (_delegate.prevDelegate == msg.sender &&
-                    currentId == _delegate.updatePeriodId) ||
-                (_delegate.prevDelegate == address(0) &&
-                    currentId == _delegate.updatePeriodId),
-            "Sender not authorized"
-        );
-        require(
-            _delegate.blockDelegate[currentId] == false,
-            "Delegating address has already voted"
-        );
-        require(
-            (_delegate.indefinite || currentId <= _delegate.endPeriod),
-            "Delegating period expired"
-        );
 
-        _vote(_owner, _tokenVote, _weights, currentId);
+        address[] memory _deletgatedAddress = delegatedAddresses[msg.sender];
+
+        require(_start < _end, "GaugeProxy: bad _start");
+        require(_end <= _deletgatedAddress.length, "GaugeProxy: bad _end");
+
+        require(_deletgatedAddress.length > 0, "No delegating address found");
+
+        for (uint256 i = _start; i < _end; i++) {
+            address _owner = _deletgatedAddress[i];
+            delegateData storage _delegate = delegations[_owner];
+
+            if (
+                ((_delegate.delegate == msg.sender &&
+                    currentId > _delegate.updatePeriodId) ||
+                    (_delegate.prevDelegate == msg.sender &&
+                        currentId == _delegate.updatePeriodId) ||
+                    (_delegate.prevDelegate == address(0) &&
+                        currentId == _delegate.updatePeriodId)) &&
+                (!_delegate.blockDelegate[currentId]) &&
+                (_delegate.indefinite || currentId <= _delegate.endPeriod)
+            ) {
+                _vote(_owner, _tokenVote, _weights, currentId);
+            }
+        }
     }
 
     // Add new token gauge
@@ -676,7 +686,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable, ERC721A__IERC721Rece
                     PICKLE.safeApprove(_gauge.gaugeAddress, 0);
                     PICKLE.safeApprove(_gauge.gaugeAddress, reward_);
                     iGaugeV2(_gauge.gaugeAddress).notifyRewardAmount(
-                        address(TempPICKLE),
+                        address(PICKLE),
                         reward_,
                         _weights,
                         periodToUse
