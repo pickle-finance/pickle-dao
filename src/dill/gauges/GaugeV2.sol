@@ -256,6 +256,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
         token.isActive = false;
+        rewardTokenDetails[_rewardToken] = token;
     }
 
     function setDisributionForToken(
@@ -270,6 +271,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
             "Given address is already distributor for given reward token"
         );
         token.distributor = _distributionForToken;
+        rewardTokenDetails[_rewardToken] = token;
     }
 
     // Multiplier amount, given the length of the lock
@@ -542,12 +544,20 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         emit Staked(account, amount, secs);
     }
 
-    function withdraw(uint256 _amount) external {
+    function withdrawNonStaked(uint256 _amount) public {
+        require(_amount > 0, "Amount must be greater than 0");
         _withdraw(msg.sender, _amount);
     }
 
+    function withdrawUnlockedStake() public {
+        _withdraw(msg.sender, 0);
+    }
+
     function withdrawAll() public {
-        _withdraw(msg.sender, _balances[msg.sender]);
+        withdrawUnlockedStake();
+        withdrawNonStaked(
+            _balances[msg.sender] - _lockedStakes[msg.sender].liquidity
+        );
     }
 
     function _withdraw(address _account, uint256 _amount)
@@ -556,14 +566,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         updateReward(_account, false)
         returns (uint256)
     {
-        require(
-            _amount <= _balances[_account],
-            "Cannot withdraw more than your balance"
-        );
         LockedStake memory thisStake = _lockedStakes[msg.sender];
 
-        //  If amount is greater than non-staked balance check stakes are unlocked
-        if (_amount > _balances[_account] - thisStake.liquidity) {
+        //  If user wants to withdraw locked stake
+        if (thisStake.liquidity > 0 && _amount == 0) {
             require(
                 stakesUnlocked ||
                     stakesUnlockedForAccount[_account] ||
@@ -571,14 +577,19 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                     thisStake.ending_timestamp < block.timestamp,
                 "Cannot withdraw more than non-staked amount"
             );
-            thisStake.liquidity = _balances[_account] - _amount;
-            if (thisStake.liquidity == 0) {
-                delete _lockedStakes[_account];
-            } else {
-                _lockedStakes[_account].liquidity = thisStake.liquidity;
-            }
+            _amount = thisStake.liquidity;
+            delete _lockedStakes[_account];
         }
 
+        // if user wants to withdraw from non - staked balance
+        if (_amount > 0) {
+            require(
+                _amount + thisStake.liquidity <= _balances[_account],
+                "Cannot withdraw more than your non-staked balance"
+            );
+        }
+
+        // update totalSupply and balances accordingly
         _totalSupply -= _amount;
         _balances[_account] -= _amount;
         TOKEN.safeTransfer(_account, _amount);
@@ -628,9 +639,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     function notifyRewardAmount(
         address _rewardToken,
-        uint256 _reward,
-        int256[] calldata _weights,
-        uint256 periodId
+        uint256 _reward
     ) external onlyDistribution(_rewardToken) updateReward(address(0), false) {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
@@ -712,7 +721,6 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
     event RewardAdded(uint256 reward);
     event Staked(address indexed user, uint256 amount, uint256 secs);
     event Withdrawn(address indexed user, uint256 amount);
-
     event RewardPaid(address indexed user, uint256 reward);
     event LockedStakeMaxMultiplierUpdated(uint256 multiplier);
     event MaxRewardsDurationUpdated(uint256 newDuration);
