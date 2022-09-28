@@ -431,7 +431,9 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
 
     function voteFor(
         address[] calldata _tokenVote,
-        int256[] calldata _weights
+        int256[] calldata _weights,
+        uint256 _start,
+        uint256 _end
     ) external {
         require(
             _tokenVote.length == _weights.length,
@@ -441,11 +443,14 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         uint256 currentId = getCurrentPeriodId();
         require(currentId > 0, "Voting not started yet");
 
-        address[] _deletgatedAddress = delegatedAddresses[msg.sender];
+        address[] memory _deletgatedAddress = delegatedAddresses[msg.sender];
+
+        require(_start < _end, "GaugeProxy: bad _start");
+        require(_end <= _deletgatedAddress.length, "GaugeProxy: bad _end");
 
         require(_deletgatedAddress.length > 0, "No delegating address found");
 
-        for (uint256 i = 0; i < _deletgatedAddress.length; i++) {
+        for (uint256 i = _start; i < _end; i++) {
             address _owner = _deletgatedAddress[i];
             delegateData storage _delegate = delegations[_owner];
 
@@ -454,11 +459,10 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
                     currentId > _delegate.updatePeriodId) ||
                     (_delegate.prevDelegate == msg.sender &&
                         currentId == _delegate.updatePeriodId) ||
-                    ((_delegate.prevDelegate == address(0) &&
-                        currentId == _delegate.updatePeriodId) &&
-                        (_delegate.indefinite ||
-                            currentId <= _delegate.endPeriod))) &&
-                (_delegate.blockDelegate[currentId] == false)
+                    (_delegate.prevDelegate == address(0) &&
+                        currentId == _delegate.updatePeriodId)) &&
+                (!_delegate.blockDelegate[currentId]) &&
+                (_delegate.indefinite || currentId <= _delegate.endPeriod)
             ) {
                 _vote(_owner, _tokenVote, _weights, currentId);
             }
