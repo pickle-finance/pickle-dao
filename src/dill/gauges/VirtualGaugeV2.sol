@@ -428,6 +428,20 @@ contract VirtualGaugeV2 is
         _deposit(amount, account, secs, block.timestamp, isPermanentlyLocked);
     }
 
+    function addBalanceToStakeFor(address _account, uint256 _amount) external {
+        LockedStake memory _lockedStake = _lockedStakes[_account];
+        require(
+            (!stakesUnlocked || !stakesUnlockedForAccount[_account]) &&
+                _lockedStake.ending_timestamp > block.timestamp,
+            "No stake found"
+        );
+        require(
+            _amount + _lockedStake.liquidity <= _balances[_account],
+            "Amount must be less that or equal to your non-staked balance"
+        );
+        _lockedStakes[_account].liquidity += _amount;
+    }
+
     function _deposit(
         uint256 amount,
         address account,
