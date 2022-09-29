@@ -9,6 +9,14 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+interface IGaugeProxyV2 {
+    function isStaked(address account) external view returns (bool);
+
+    function getTokenLevel(address account) external view returns (uint256);
+
+    function isBoostable(address account) external view returns (bool);
+}
+
 contract VirtualGaugeV2 is
     ProtocolGovernance,
     ReentrancyGuard,
@@ -75,6 +83,8 @@ contract VirtualGaugeV2 is
         bool isPermanentlyLocked;
     }
 
+    //Instance of gaugeProxy
+    IGaugeProxyV2 public gaugeProxy;
     /* ========== MODIFIERS ========== */
 
     modifier onlyDistribution(address _token) {
@@ -135,10 +145,15 @@ contract VirtualGaugeV2 is
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _jar, address _governance) {
+    constructor(
+        address _jar,
+        address _governance,
+        address _gaugeProxy
+    ) {
         require(_jar == address(0), "cannot set zero address");
         jar = IJar(_jar);
         governance = _governance;
+        gaugeProxy = IGaugeProxyV2(_gaugeProxy);
     }
 
     /* ========== VIEWS ========== */
@@ -360,7 +375,20 @@ contract VirtualGaugeV2 is
             _MultiplierPrecision;
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
-        return dillBoostedDerivedBal + lockBoostedDerivedBal;
+        uint256 nftBoostedDerivedBalance = 0;
+        if (gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)) {
+            uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
+            uint256 nftLockMultiplier = (lockMaxMultiplier -
+                (10e17) *
+                tokenLevel) / 100;
+            nftBoostedDerivedBalance =
+                (thisStake.liquidity * nftLockMultiplier) /
+                _MultiplierPrecision;
+        }
+        return
+            dillBoostedDerivedBal +
+            lockBoostedDerivedBal +
+            nftBoostedDerivedBalance;
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */

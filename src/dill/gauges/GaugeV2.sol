@@ -8,9 +8,11 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 interface IGaugeProxyV2 {
-    function isStaked(address account) external view returns(bool);
-    function getTokenLevel(address account) external view returns(uint256);
-    function isBoostable(address account) external view returns(bool);
+    function isStaked(address account) external view returns (bool);
+
+    function getTokenLevel(address account) external view returns (uint256);
+
+    function isBoostable(address account) external view returns (bool);
 }
 
 contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
@@ -141,7 +143,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _token, address _governance, address _gaugeProxy) {
+    constructor(
+        address _token,
+        address _governance,
+        address _gaugeProxy
+    ) {
         TOKEN = IERC20(_token);
         governance = _governance;
         gaugeProxy = IGaugeProxyV2(_gaugeProxy);
@@ -367,13 +373,19 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         uint256 nftBoostedDerivedBalance = 0;
-        if(gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)){
+        if (gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)) {
             uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
-            uint256 nftLockMultiplier = (lockMaxMultiplier - (10e17) * tokenLevel) / 100;
-            nftBoostedDerivedBalance = (thisStake.liquidity * nftLockMultiplier) /
+            uint256 nftLockMultiplier = (lockMaxMultiplier -
+                (10e17) *
+                tokenLevel) / 100;
+            nftBoostedDerivedBalance =
+                (thisStake.liquidity * nftLockMultiplier) /
                 _MultiplierPrecision;
         }
-        return dillBoostedDerivedBal + lockBoostedDerivedBal + nftBoostedDerivedBalance;
+        return
+            dillBoostedDerivedBal +
+            lockBoostedDerivedBal +
+            nftBoostedDerivedBalance;
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */
