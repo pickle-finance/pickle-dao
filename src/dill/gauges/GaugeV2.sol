@@ -46,7 +46,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
     // Rewards tracking
     mapping(address => mapping(uint256 => uint256))
         private userRewardPerTokenPaid;
-    mapping(address => mapping(uint256 => uint256)) public _rewards;
+    mapping(address => mapping(uint256 => uint256)) public rewards;
     uint256[] private rewardPerTokenStored;
     uint256 public multiplierDecayPerSecond = uint256(48e9);
     mapping(address => uint256) private _lastUsedMultiplier;
@@ -117,7 +117,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                     rewardTokens[i]
                 ];
                 if (token.isActive) {
-                    _rewards[account][i] = earnedArr[i];
+                    rewards[account][i] = earnedArr[i];
                     userRewardPerTokenPaid[account][i] = token
                         .rewardPerTokenStored;
                 }
@@ -229,7 +229,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                         ((derivedBalances[account] *
                             (token.rewardPerTokenStored -
                                 userRewardPerTokenPaid[account][i])) / 1e18) +
-                        _rewards[account][i];
+                        rewards[account][i];
                 }
             }
         }
@@ -374,12 +374,12 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
     // Simple Deposits
 
     function depositAll() external {
-        require(TOKEN.balanceOf(msg.sender) > 0, "Cannot stake 0");
+        require(TOKEN.balanceOf(msg.sender) > 0, "Cannot deposit 0");
         _deposit(TOKEN.balanceOf(msg.sender), msg.sender, 0, 0, false, true);
     }
 
     function depositFor(uint256 amount, address account) external {
-        require(amount > 0, "Cannot stake 0");
+        require(amount > 0, "Cannot deposit 0");
         require(
             stakingDelegates[account][msg.sender],
             "Only registerd delegates can deposit for their deligator"
@@ -388,7 +388,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
     }
 
     function deposit(uint256 amount) external {
-        require(amount > 0, "Cannot stake 0");
+        require(amount > 0, "Cannot deposit 0");
         _deposit(amount, msg.sender, 0, 0, false, true);
     }
 
@@ -535,20 +535,21 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         emit Staked(account, amount, secs);
     }
 
-    function withdrawNonStaked(uint256 _amount) public {
+    function withdrawNonStaked(uint256 _amount) public returns (uint256) {
         require(_amount > 0, "Amount must be greater than 0");
-        _withdraw(msg.sender, _amount);
+        return _withdraw(msg.sender, _amount);
     }
 
-    function withdrawUnlockedStake() public {
-        _withdraw(msg.sender, 0);
+    function withdrawUnlockedStake() public returns (uint256) {
+        return _withdraw(msg.sender, 0);
     }
 
-    function withdrawAll() public {
-        withdrawUnlockedStake();
-        withdrawNonStaked(
-            _balances[msg.sender] - _lockedStakes[msg.sender].liquidity
-        );
+    function withdrawAll() public returns (uint256) {
+        return
+            withdrawUnlockedStake() +
+            withdrawNonStaked(
+                _balances[msg.sender] - _lockedStakes[msg.sender].liquidity
+            );
     }
 
     function _withdraw(address _account, uint256 _amount)
@@ -593,9 +594,9 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
         for (uint256 i = 0; i < rewardTokens.length; i++) {
             if (rewardTokenDetails[rewardTokens[i]].isActive) {
-                reward = _rewards[msg.sender][i];
+                reward = rewards[msg.sender][i];
                 if (reward > 0) {
-                    _rewards[msg.sender][i] = 0;
+                    rewards[msg.sender][i] = 0;
                     IERC20(rewardTokens[i]).safeTransfer(msg.sender, reward);
                     emit RewardPaid(msg.sender, reward);
                 }
@@ -612,9 +613,9 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         require(token.isActive, "Token not available");
         uint256 reward;
         if (token.isActive) {
-            reward = _rewards[account][token.index];
+            reward = rewards[account][token.index];
             if (reward > 0) {
-                _rewards[account][token.index] = 0;
+                rewards[account][token.index] = 0;
                 IERC20(rewardTokens[token.index]).safeTransfer(account, reward);
                 emit RewardPaid(account, reward);
             }
@@ -628,10 +629,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
-    function notifyRewardAmount(
-        address _rewardToken,
-        uint256 _reward
-    ) external onlyDistribution(_rewardToken) updateReward(address(0), false) {
+    function notifyRewardAmount(address _rewardToken, uint256 _reward)
+        external
+        onlyDistribution(_rewardToken)
+        updateReward(address(0), false)
+    {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
         require(
