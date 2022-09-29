@@ -46,11 +46,11 @@ contract VirtualGaugeV2 is
     // Rewards tracking
     mapping(address => mapping(uint256 => uint256))
         private userRewardPerTokenPaid;
-    mapping(address => mapping(uint256 => uint256)) public _rewards;
+    mapping(address => mapping(uint256 => uint256)) public rewards;
     mapping(address => bool) public authorisedAddress;
     // uint256[] private rewardPerTokenStored;
     uint256 public multiplierDecayPerSecond = uint256(48e9);
-    mapping(address => mapping(uint256 => uint256)) private _lastUsedMultiplier;
+    mapping(address => uint256) private _lastUsedMultiplier;
     mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
 
     // Balance tracking
@@ -59,7 +59,7 @@ contract VirtualGaugeV2 is
     mapping(address => uint256) private _base;
 
     // Stake tracking
-    mapping(address => LockedStake[]) private _lockedStakes;
+    mapping(address => LockedStake) private _lockedStakes;
 
     // Administrative booleans
     bool public stakesUnlocked; // Release locked stakes in case of emergency
@@ -68,9 +68,9 @@ contract VirtualGaugeV2 is
     /* ========== STRUCTS ========== */
 
     struct LockedStake {
-        uint256 start_timestamp;
+        uint256 startTimestamp;
         uint256 liquidity;
-        uint256 ending_timestamp;
+        uint256 endingTimestamp;
         uint256 lock_multiplier;
         bool isPermanentlyLocked;
     }
@@ -113,7 +113,7 @@ contract VirtualGaugeV2 is
                     rewardTokens[i]
                 ];
                 if (token.isActive) {
-                    _rewards[account][i] = earnedArr[i];
+                    rewards[account][i] = earnedArr[i];
                     userRewardPerTokenPaid[account][i] = token
                         .rewardPerTokenStored;
                 }
@@ -185,12 +185,11 @@ contract VirtualGaugeV2 is
 
     function _averageDecayedLockMultiplier(
         address account,
-        uint256 index,
         uint256 elapsedSeconds
     ) internal view returns (uint256) {
         return
             (2 *
-                _lastUsedMultiplier[account][index] -
+                _lastUsedMultiplier[account] -
                 (elapsedSeconds - 1) *
                 multiplierDecayPerSecond) / 2;
     }
@@ -199,7 +198,7 @@ contract VirtualGaugeV2 is
     function lockedStakesOf(address account)
         external
         view
-        returns (LockedStake[] memory)
+        returns (LockedStake memory)
     {
         return _lockedStakes[account];
     }
@@ -225,7 +224,7 @@ contract VirtualGaugeV2 is
                         ((derivedBalances[account] *
                             (token.rewardPerTokenStored -
                                 userRewardPerTokenPaid[account][i])) / 1e18) +
-                        _rewards[account][i];
+                        rewards[account][i];
                 }
             }
         }
@@ -316,58 +315,50 @@ contract VirtualGaugeV2 is
             _balance
         );
 
-        // Loop through the locked stakes, first by getting the liquidity * lock_multiplier portion
         uint256 lockBoostedDerivedBal = 0;
-        for (uint256 i = 0; i < _lockedStakes[account].length; i++) {
-            LockedStake memory thisStake = _lockedStakes[account][i];
-            uint256 lock_multiplier = thisStake.lock_multiplier;
-            uint256 lastRewardClaimTime = _lastRewardClaimTime[account];
-            // If the lock is expired
-            if (
-                thisStake.ending_timestamp <= block.timestamp &&
-                !thisStake.isPermanentlyLocked
-            ) {
-                // If the lock expired in the time since the last claim, the weight needs to be proportionately averaged this time
-                if (lastRewardClaimTime < thisStake.ending_timestamp) {
-                    uint256 timeBeforeExpiry = thisStake.ending_timestamp -
-                        lastRewardClaimTime;
-                    uint256 timeAfterExpiry = block.timestamp -
-                        thisStake.ending_timestamp;
 
-                    // Get the weighted-average lock_multiplier
-                    uint256 numerator = (lock_multiplier * timeBeforeExpiry) +
-                        (_MultiplierPrecision * timeAfterExpiry);
-                    lock_multiplier =
-                        numerator /
-                        (timeBeforeExpiry + timeAfterExpiry);
-                }
-                // Otherwise, it needs to just be 1x
-                else {
-                    lock_multiplier = _MultiplierPrecision;
-                }
-            } else {
-                uint256 elapsedSeconds = block.timestamp - lastRewardClaimTime;
-                if (elapsedSeconds > 0) {
-                    lock_multiplier = thisStake.isPermanentlyLocked
-                        ? lockMaxMultiplier
-                        : _averageDecayedLockMultiplier(
-                            account,
-                            i,
-                            elapsedSeconds
-                        );
-                    _lastUsedMultiplier[account][i] =
-                        _lastUsedMultiplier[account][i] -
-                        (elapsedSeconds - 1) *
-                        multiplierDecayPerSecond;
-                }
+        LockedStake memory thisStake = _lockedStakes[account];
+        uint256 lock_multiplier = thisStake.lock_multiplier;
+        uint256 lastRewardClaimTime = _lastRewardClaimTime[account];
+        // If the lock is expired
+        if (
+            thisStake.endingTimestamp <= block.timestamp &&
+            !thisStake.isPermanentlyLocked
+        ) {
+            // If the lock expired in the time since the last claim, the weight needs to be proportionately averaged this time
+            if (lastRewardClaimTime < thisStake.endingTimestamp) {
+                uint256 timeBeforeExpiry = thisStake.endingTimestamp -
+                    lastRewardClaimTime;
+                uint256 timeAfterExpiry = block.timestamp -
+                    thisStake.endingTimestamp;
+
+                // Get the weighted-average lock_multiplier
+                uint256 numerator = (lock_multiplier * timeBeforeExpiry) +
+                    (_MultiplierPrecision * timeAfterExpiry);
+                lock_multiplier =
+                    numerator /
+                    (timeBeforeExpiry + timeAfterExpiry);
             }
-            uint256 liquidity = thisStake.liquidity;
-            uint256 combined_boosted_amount = (liquidity * lock_multiplier) /
-                _MultiplierPrecision;
-            lockBoostedDerivedBal =
-                lockBoostedDerivedBal +
-                combined_boosted_amount;
+            // Otherwise, it needs to just be 1x
+            else {
+                lock_multiplier = _MultiplierPrecision;
+            }
+        } else {
+            uint256 elapsedSeconds = block.timestamp - lastRewardClaimTime;
+            if (elapsedSeconds > 0) {
+                lock_multiplier = thisStake.isPermanentlyLocked
+                    ? lockMaxMultiplier
+                    : _averageDecayedLockMultiplier(account, elapsedSeconds);
+                _lastUsedMultiplier[account] =
+                    _lastUsedMultiplier[account] -
+                    (elapsedSeconds - 1) *
+                    multiplierDecayPerSecond;
+            }
         }
+        uint256 liquidity = thisStake.liquidity;
+        uint256 combined_boosted_amount = (liquidity * lock_multiplier) /
+            _MultiplierPrecision;
+        lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         return dillBoostedDerivedBal + lockBoostedDerivedBal;
     }
@@ -386,7 +377,8 @@ contract VirtualGaugeV2 is
         external
         onlyJarAndAuthorised
     {
-        _deposit(amount, account, 0, block.timestamp, false);
+        require(amount > 0, "Cannot deposit 0");
+        _deposit(amount, account, 0, 0, false);
     }
 
     function depositForAndLock(
@@ -395,6 +387,16 @@ contract VirtualGaugeV2 is
         uint256 secs,
         bool isPermanentlyLocked
     ) external lockable(secs) onlyJarAndAuthorised {
+        require(amount > 0, "Cannot deposit 0");
+        LockedStake memory thisStake = _lockedStakes[account];
+        // Check if stake already exists and if it is unlocked
+        if (thisStake.liquidity > 0) {
+            require(
+                (!stakesUnlocked || !stakesUnlockedForAccount[account]) &&
+                    (thisStake.endingTimestamp > block.timestamp),
+                "Please withdraw your unlocked stake first"
+            );
+        }
         _deposit(amount, account, secs, block.timestamp, isPermanentlyLocked);
     }
 
@@ -402,122 +404,97 @@ contract VirtualGaugeV2 is
         uint256 amount,
         address account,
         uint256 secs,
-        uint256 start_timestamp,
+        uint256 startTimestamp,
         bool isPermanentlyLocked
     ) internal nonReentrant updateReward(account, false) {
-        require(amount > 0, "Cannot stake 0");
-        uint256 MaxMultiplier = lockMultiplier(secs);
-        _lockedStakes[account].push(
-            LockedStake(
-                start_timestamp,
-                amount,
-                start_timestamp + secs,
-                MaxMultiplier,
-                isPermanentlyLocked
-            )
-        );
-        _lastUsedMultiplier[account][
-            _lockedStakes[account].length - 1
-        ] = MaxMultiplier;
+        LockedStake memory _lockedStake = _lockedStakes[account];
+
+        if (
+            startTimestamp > 0 &&
+            (_lockedStake.startTimestamp == 0 ||
+                (!_lockedStake.isPermanentlyLocked &&
+                    _lockedStake.endingTimestamp <= startTimestamp))
+        ) {
+            _lockedStake.startTimestamp = startTimestamp;
+        }
+
+        if (secs + _lockedStake.startTimestamp > _lockedStake.endingTimestamp) {
+            uint256 MaxMultiplier = lockMultiplier(secs);
+            _lockedStake.endingTimestamp = _lockedStake.startTimestamp + secs;
+            _lockedStake.lock_multiplier = MaxMultiplier;
+            _lastUsedMultiplier[account] = MaxMultiplier;
+        }
+
+        if (isPermanentlyLocked && !_lockedStake.isPermanentlyLocked) {
+            _lockedStake.isPermanentlyLocked = isPermanentlyLocked;
+        }
+
+        _lockedStakes[account] = _lockedStake;
 
         // Needed for edge case if the staker only claims once, and after the lock expired
         if (_lastRewardClaimTime[account] == 0)
             _lastRewardClaimTime[account] = block.timestamp;
-        emit Staked(account, amount, secs, _lockedStakes[account].length - 1);
+
+        emit Staked(account, amount, secs);
     }
 
-    function withdraw(address account, uint256 index)
-        external
+    function withdrawNonStaked(address account, uint256 _amount)
+        public
         onlyJarAndAuthorised
         returns (uint256)
     {
-        return _withdraw(account, index);
+        return _withdraw(account, _amount);
     }
 
-    function withdrawAll(address account)
+    function withdrawUnlockedStake(address _account)
         public
         onlyJarAndAuthorised
-        returns (uint256 amount)
+        returns (uint256)
     {
-        amount = _partialWithdrawal(account, balanceOf(account));
-        emit WithdrawnAll(account, amount);
+        return _withdraw(_account, 0);
     }
 
-    function partialWithdrawal(address account, uint256 _amount)
-        external
+    function withdrawAll(address _account)
+        public
         onlyJarAndAuthorised
-        returns (uint256 amount)
+        returns (uint256)
     {
-        amount = _partialWithdrawal(account, _amount);
-        emit WithdrawnPartilly(account, amount);
+        return (withdrawUnlockedStake(_account) +
+            withdrawNonStaked(
+                _account,
+                balanceOf(_account) - _lockedStakes[_account].liquidity
+            ));
     }
 
-    function _partialWithdrawal(address _account, uint256 _amount)
+    function _withdraw(address _account, uint256 _amount)
         internal
         nonReentrant
         updateReward(_account, false)
         returns (uint256)
     {
-        require(
-            _amount <= balanceOf(_account),
-            "Withdraw amount exceeds balance"
-        );
-        uint256 amountToTransfer = 0;
-        for (uint256 i = 0; i < _lockedStakes[_account].length; i++) {
-            LockedStake memory thisStake = _lockedStakes[_account][i];
-            // check if stake is not locked
-            uint256 amountRemaining = _amount - amountToTransfer;
-            if (
-                thisStake.liquidity > 0 &&
-                (stakesUnlocked ||
+        LockedStake memory thisStake = _lockedStakes[_account];
+
+        //  If user wants to withdraw locked stake
+        if (thisStake.liquidity > 0 && _amount == 0) {
+            require(
+                stakesUnlocked ||
                     stakesUnlockedForAccount[_account] ||
-                    (!thisStake.isPermanentlyLocked &&
-                        block.timestamp >= thisStake.ending_timestamp))
-            ) {
-                if (thisStake.liquidity < amountRemaining) {
-                    amountToTransfer += thisStake.liquidity;
-                    delete _lockedStakes[_account][i];
-                } else if (thisStake.liquidity == amountRemaining) {
-                    amountToTransfer += thisStake.liquidity;
-                    delete _lockedStakes[_account][i];
-                    break;
-                } else if (thisStake.liquidity > amountRemaining) {
-                    _lockedStakes[_account][i].liquidity -= amountRemaining;
-                    amountToTransfer = _amount;
-                    break;
-                }
-            }
+                    !thisStake.isPermanentlyLocked ||
+                    thisStake.endingTimestamp < block.timestamp,
+                "Cannot withdraw more than non-staked amount"
+            );
+            _amount = thisStake.liquidity;
+            delete _lockedStakes[_account];
         }
-        return amountToTransfer;
-    }
 
-    function _withdraw(address account, uint256 index)
-        internal
-        nonReentrant
-        updateReward(account, false)
-        returns (uint256)
-    {
-        LockedStake memory thisStake;
-        require(index < _lockedStakes[account].length, "Stake not found");
-
-        thisStake = _lockedStakes[account][index];
-
-        require(
-            stakesUnlocked ||
-                stakesUnlockedForAccount[account] ||
-                (
-                    thisStake.isPermanentlyLocked
-                        ? false
-                        : block.timestamp >= thisStake.ending_timestamp
-                ),
-            "Stake is still locked!"
-        );
-
-        if (thisStake.liquidity > 0) {
-            delete _lockedStakes[account][index];
-            emit Withdrawn(account, thisStake.liquidity, index);
+        // if user wants to withdraw from non - staked balance
+        if (_amount > 0) {
+            require(
+                _amount + thisStake.liquidity <= balanceOf(_account),
+                "Cannot withdraw more than your non-staked balance"
+            );
         }
-        return thisStake.liquidity;
+        return _amount;
     }
 
     function getReward(address account)
@@ -530,9 +507,9 @@ contract VirtualGaugeV2 is
 
         for (uint256 i = 0; i < rewardTokens.length; i++) {
             if (rewardTokenDetails[rewardTokens[i]].isActive) {
-                reward = _rewards[account][i];
+                reward = rewards[account][i];
                 if (reward > 0) {
-                    _rewards[account][i] = 0;
+                    rewards[account][i] = 0;
                     IERC20(rewardTokens[i]).safeTransfer(account, reward);
                     emit RewardPaid(account, reward);
                 }
@@ -550,9 +527,9 @@ contract VirtualGaugeV2 is
         require(token.isActive, "Token not available");
         uint256 reward;
         if (token.isActive) {
-            reward = _rewards[account][token.index];
+            reward = rewards[account][token.index];
             if (reward > 0) {
-                _rewards[account][token.index] = 0;
+                rewards[account][token.index] = 0;
                 IERC20(rewardTokens[token.index]).safeTransfer(account, reward);
                 emit RewardPaid(account, reward);
             }
@@ -566,11 +543,12 @@ contract VirtualGaugeV2 is
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
-    function notifyRewardAmount(address _rewardToken, uint256 _reward, int256[] calldata _weights, uint256 periodId)
-        external
-        onlyDistribution(_rewardToken)
-        updateReward(address(0), false)
-    {
+    function notifyRewardAmount(
+        address _rewardToken,
+        uint256 _reward,
+        int256[] calldata _weights,
+        uint256 periodId
+    ) external onlyDistribution(_rewardToken) updateReward(address(0), false) {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
         require(
@@ -589,7 +567,9 @@ contract VirtualGaugeV2 is
         } else {
             uint256 remaining = token.periodFinish - block.timestamp;
             uint256 leftover = remaining * token.rewardRate;
-            rewardTokenDetails[_rewardToken].rewardRate = (_reward + leftover) / DURATION;
+            rewardTokenDetails[_rewardToken].rewardRate =
+                (_reward + leftover) /
+                DURATION;
         }
 
         // Ensure the provided reward amount is not more than the balance in the contract.
@@ -605,7 +585,9 @@ contract VirtualGaugeV2 is
         emit RewardAdded(_reward);
 
         rewardTokenDetails[_rewardToken].lastUpdateTime = block.timestamp;
-        rewardTokenDetails[_rewardToken].periodFinish = block.timestamp + DURATION;
+        rewardTokenDetails[_rewardToken].periodFinish =
+            block.timestamp +
+            DURATION;
     }
 
     function setMultipliers(uint256 _lock_max_multiplier) external onlyGov {
@@ -642,19 +624,9 @@ contract VirtualGaugeV2 is
     }
 
     /* ========== EVENTS ========== */
-    event approvedTokenReceipt(address _spender, uint256 _amount);
-    event stakeTransferd(address _to, uint256 _index);
-    event allStakesTransferd(address _to);
     event RewardAdded(uint256 reward);
-    event Staked(
-        address indexed user,
-        uint256 amount,
-        uint256 secs,
-        uint256 index
-    );
+    event Staked(address indexed user, uint256 amount, uint256 secs);
     event Withdrawn(address indexed user, uint256 amount, uint256 index);
-    event WithdrawnAll(address indexed user, uint256 amount);
-    event WithdrawnPartilly(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
     event LockedStakeMaxMultiplierUpdated(uint256 multiplier);
     event MaxRewardsDurationUpdated(uint256 newDuration);
