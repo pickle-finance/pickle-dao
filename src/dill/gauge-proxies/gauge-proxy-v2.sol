@@ -400,14 +400,14 @@ contract GaugeProxyV2 is
     /// @param _chainId Blockchain ID
     /// @param _weight Blockchain's weight to be set
     function setChainIdWeight(uint256 _chainId, uint256 _weight) external {
-        require(msg.sender == governance, "!gov");
+        require(msg.sender == governance, "GaugeProxy: !gov");
         require(
             _chainId > 0 && _chainId <= _chainIdCounter,
-            "invalid chain id"
+            "GaugeProxy: invalid chain id"
         );
         require(
             distributionId == getCurrentPeriodId(),
-            "GaugeProxyV2: !all distributions complete"
+            "GaugeProxy: !all distributions complete"
         );
         chainIdWeights[_chainId] = _weight;
 
@@ -418,7 +418,7 @@ contract GaugeProxyV2 is
     /// @dev Can only reset owner's votes of current ID - calls internal method _reset
     function reset() external {
         uint256 currentId = getCurrentPeriodId();
-        require(currentId > 0, "Voting not started yet");
+        require(currentId > 0, "GaugeProxy: voting not started yet");
         _reset(msg.sender, currentId);
     }
 
@@ -449,11 +449,11 @@ contract GaugeProxyV2 is
     ) external {
         require(
             _delegateAddress != address(0),
-            "GaugeProxyV2: cannot delegate zero address"
+            "GaugeProxy: cannot delegate zero address"
         );
         require(
             _delegateAddress != msg.sender,
-            "GaugeProxyV2: delegate address cannot be delegating"
+            "GaugeProxy: delegate address cannot be delegating"
         );
 
         DelegateData storage _delegate = delegations[msg.sender];
@@ -478,6 +478,21 @@ contract GaugeProxyV2 is
         }
     }
 
+    /// @notice Revoke delegate's right to vote for delegator
+    function revokeDelegate() external {
+        DelegateData storage _delegate = delegations[msg.sender];
+        require(
+            _delegate.delegate != address(0),
+            "GaugeProxy: No delegate found"
+        );
+        uint256 currentPeriod = getCurrentPeriodId();
+        require(
+            _delegate.endPeriod < currentPeriod || !_delegate.indefinite,
+            "GaugeProxy: deleagte already expired"
+        );
+        _delegate.endPeriod = currentPeriod - 1;
+    }
+
     /// @notice this function lets delegate to vote for its delegators
     /// @param _tokenVote Array of gauge token addresses delegate wants to vote for
     /// @param _weights  Array of weights delegate want to use for voting
@@ -496,14 +511,14 @@ contract GaugeProxyV2 is
         );
 
         uint256 currentId = getCurrentPeriodId();
-        require(currentId > 0, "Voting not started yet");
+        require(currentId > 0, "GaugeProxy: voting not started yet");
 
         address[] memory _deletgatedAddress = delegatedAddresses[msg.sender];
 
         require(_start < _end, "GaugeProxy: bad _start");
         require(_end <= _deletgatedAddress.length, "GaugeProxy: bad _end");
 
-        require(_deletgatedAddress.length > 0, "No delegating address found");
+        require(_deletgatedAddress.length > 0, "GaugeProxy: no delegating address found");
 
         for (uint256 i = _start; i < _end; i++) {
             address _owner = _deletgatedAddress[i];
@@ -533,11 +548,11 @@ contract GaugeProxyV2 is
         uint256 _chainId,
         address _gaugeAddress
     ) external {
-        require(msg.sender == governance, "!gov");
-        require(_chainId > 0, "invalid chain id");
+        require(msg.sender == governance, "GaugeProxy: !gov");
+        require(_chainId > 0, "GaugeProxy: invalid chain id");
 
         Gauge memory _gauge = gauges[_token];
-        require(gauges[_token].gaugeAddress == address(0x0), "exists");
+        require(gauges[_token].gaugeAddress == address(0x0), "GaugeProxy: exists");
 
         _gauge.gaugeAddress = _gaugeAddress;
         tokensByChainId[_chainId].push(_token);
@@ -557,13 +572,13 @@ contract GaugeProxyV2 is
         uint256 _chainId,
         address _gaugeAddress
     ) external {
-        require(msg.sender == governance, "!gov");
-        require(_chainId > 0, "invalid chain id");
-        require(_gaugeAddress != address(0), "Invalid Gauge Address");
+        require(msg.sender == governance, "GaugeProxy: !gov");
+        require(_chainId > 0, "GaugeProxy: invalid chain id");
+        require(_gaugeAddress != address(0), "GaugeProxy: invalid Gauge Address");
 
         Gauge memory _gauge = gauges[_token];
 
-        require(_gauge.gaugeAddress == address(0x0), "exists");
+        require(_gauge.gaugeAddress == address(0x0), "GaugeProxy: exists");
 
         _gauge.gaugeAddress = _gaugeAddress;
         tokensByChainId[_chainId].push(_token);
@@ -582,11 +597,11 @@ contract GaugeProxyV2 is
         uint256 _weight,
         address _rootGaugeAddress
     ) external {
-        require(msg.sender == governance, "!gov");
+        require(msg.sender == governance, "GaugeProxy: !gov");
         uint256 currentId = getCurrentPeriodId();
         require(
             distributionId == currentId,
-            "GaugeProxyV2: !all distributions complete"
+            "GaugeProxy: !all distributions complete"
         );
 
         chainIds[_chainIdCounter] = _name;
@@ -608,19 +623,19 @@ contract GaugeProxyV2 is
     /// @param _token Address of gauge token
     /// @dev A gauge can only be delisted when it has received -ve aggregate voting 5 times
     function delistGauge(address _token) external {
-        require(msg.sender == governance, "!gov");
-        require(gauges[_token].gaugeAddress != address(0x0), "!exists");
+        require(msg.sender == governance, "GaugeProxy: !gov");
+        require(gauges[_token].gaugeAddress != address(0x0), "GaugeProxy: !exists");
         require(
             gauges[_token].gaugeType != GaugeType.ROOT,
-            "!Cannot delist root gauge"
+            "GaugeProxy: cannot delist root gauge"
         );
 
         uint256 currentId = getCurrentPeriodId();
-        require(distributionId == currentId, "! all distributions completed");
+        require(distributionId == currentId, "GaugeProxy: all distributions completed");
 
         address _gauge = gauges[_token].gaugeAddress;
 
-        require(gaugeWithNegativeWeight[_gauge] >= 5, "censors < 5");
+        require(gaugeWithNegativeWeight[_gauge] >= 5, "GaugeProxy: censors < 5");
 
         uint256 chainId = gauges[_token].chainId;
         address _rootGauge = rootGauge[chainId];
@@ -651,9 +666,9 @@ contract GaugeProxyV2 is
     /// @notice Sets MasterChef PID
     /// @param _pid PID to set on MasterChef
     function setPID(uint256 _pid) external {
-        require(msg.sender == governance, "!gauge gov");
-        require(pid == 0, "pid has already been set");
-        require(_pid > 0, "invalid pid");
+        require(msg.sender == governance, "GaugeProxy: !gauge gov");
+        require(pid == 0, "GaugeProxy: pid has already been set");
+        require(_pid > 0, "GaugeProxy: invalid pid");
         pid = _pid;
     }
 
@@ -662,17 +677,17 @@ contract GaugeProxyV2 is
     /// @param _end Ending index of gauges
     /// @dev _start and _end are taken to avoid out of gas error in case large number of gauges are listed
     function distribute(uint256 _start, uint256 _end) external {
-        require(_start < _end, "GaugeProxyV2: bad _start");
-        require(_end <= _tokens.length, "GaugeProxyV2: bad _end");
+        require(_start < _end, "GaugeProxy: bad _start");
+        require(_end <= _tokens.length, "GaugeProxy: bad _end");
         require(
             msg.sender == governance,
-            "GaugeProxyV2: only governance can distribute"
+            "GaugeProxy: only governance can distribute"
         );
 
         uint256 currentId = getCurrentPeriodId();
         require(
             distributionId < currentId,
-            "GaugeProxyV2: all period distributions complete"
+            "GaugeProxy: all period distributions complete"
         );
 
         uint256 periodToUse = 0;
@@ -762,7 +777,7 @@ contract GaugeProxyV2 is
     function setNftContract(address _contractAddress) external {
         require(
             msg.sender == governance,
-            "gauge-proxy-v2.sol : This operation can only be performed by governance"
+            "GaugeProxy: This operation can only be performed by governance"
         );
         nftToken = IPickleNFT(_contractAddress);
     }
@@ -771,10 +786,10 @@ contract GaugeProxyV2 is
     /// @param _tokenId NFT token ID
     /// @param _periods Number of periods NFT is to be staked for
     function depositAndLock(uint256 _tokenId, uint256 _periods) external {
-        require(_tokenId >= 0, "gauge-proxy-v2 : token id Can't be negative");
+        require(_tokenId >= 0, "GaugeProxy: token id Can't be negative");
         require(
             _periods > 0,
-            "gauge-proxy-v2: staking duration should greater then cliffDuration"
+            "GaugeProxy: staking duration should greater then cliffDuration"
         );
 
         _deposit(_tokenId, msg.sender, _periods, getCurrentPeriodId());
@@ -794,7 +809,7 @@ contract GaugeProxyV2 is
         //Only staked when user didn't have any staked nft
         require(
             _lockedStake[_account].endingPeriod != 0,
-            "gauge-proxy-v2 : User already stacked a nft"
+            "GaugeProxy: User already stacked a nft"
         );
         _lockedStake[_account] = LockedStake(
             _tokenId,
@@ -811,12 +826,12 @@ contract GaugeProxyV2 is
         //Checking if stacked or not
         require(
             _lockedStake[msg.sender].endingPeriod == 0,
-            "gauge-proxy-v2 : User don't have stacked a nft"
+            "GaugeProxy: vUser don't have stacked a nft"
         );
         //checking lock status
         require(
             _lockedStake[msg.sender].endingPeriod > getCurrentPeriodId(),
-            "guage-proxy-v2 : Can't withdraw before locked staked"
+            "GaugeProxy: Can't withdraw before locked staked"
         );
         //safe transfer to user
         nftToken.safeTransferFrom(address(this), msg.sender, _tokenId);
@@ -847,7 +862,7 @@ contract GaugeProxyV2 is
 
     /// @notice Deposits mDILL into MasterChef
     function deposit() public {
-        require(pid > 0, "pid not initialized");
+        require(pid > 0, "GaugeProxy: pid not initialized");
         IERC20Upgradeable _token = TOKEN;
         uint256 _balance = _token.balanceOf(address(this));
         _token.safeApprove(address(MASTER), 0);
