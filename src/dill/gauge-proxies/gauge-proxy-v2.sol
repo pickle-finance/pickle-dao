@@ -236,7 +236,10 @@ contract GaugeProxyV2 is
 
     /* ========== VIEWS ========== */
 
-    /// @notice Gets current period number
+    /**
+     * @notice  Gets current period ID
+     * @return  uint256  current period ID
+     */
     function getCurrentPeriodId() public view returns (uint256) {
         return
             block.timestamp > firstDistribution
@@ -244,38 +247,55 @@ contract GaugeProxyV2 is
                 : 0;
     }
 
-    /// @notice Gets array of gauge tokens
+    /**
+     * @notice  Gets array of gauge tokens
+     * @return  address[] Array of gauge tokens
+     */
     function tokens() external view returns (address[] memory) {
         return _tokens;
     }
 
-    /// @notice Gets gauge details
-    /// @param _token Gauge token address
+    /**
+     * @notice  Gets gauge details
+     * @param   _token  Gauge token address
+     * @return  Gauge Gauge details
+     */
     function getGauge(address _token) external view returns (Gauge memory) {
         return gauges[_token];
     }
 
-    /// @notice Gets number of gauge tokens stored
+    /**
+     * @notice Gets number of gauge tokens stored
+     * @return  uint256  number of gauge tokens stored
+     */
     function length() external view returns (uint256) {
         return _tokens.length;
     }
 
-    /// @notice Gets NFT level
-    function getTokenLevel(address account) external view returns (uint256) {
-        uint256 tokenId = _lockedStake[account].tokenId;
+    /**
+     * @notice  Gets NFT level
+     * @param   _account  Address of NFT owner
+     * @return  uint256  Level of token
+     */
+    function getTokenLevel(address _account) external view returns (uint256) {
+        uint256 tokenId = _lockedStake[_account].tokenId;
         return nftToken.getTokenLevel(tokenId);
     }
 
-    /// @notice Checks if user has staked NFT
-    /// @param _account Address of NFT owner
-    /// @return Whether NFT is staked or not
+    /**
+     * @notice  Checks if user has staked NFT
+     * @param   _account  Address of NFT owner
+     * @return  bool  NFT is staked or not
+     */
     function isStaked(address _account) external view returns (bool) {
         return _lockedStake[_account].endingPeriod > 0;
     }
 
-    /// @notice Checks if current period is not equal to staked period and the ending period is not expired
-    /// @param _account Address of NFT owner
-    /// @return Whether NFT stake is boostable or not
+    /**
+     * @notice  Checks if current period is not equal to staked period and the ending period is not expired
+     * @param   _account  Address of NFT owner
+     * @return  bool  NFT stake is boostable or not
+     */
     function isBoostable(address _account) external view returns (bool) {
         return (_lockedStake[_account].endingPeriod >= getCurrentPeriodId() &&
             getCurrentPeriodId() > _lockedStake[_account].starting_period - 1);
@@ -283,7 +303,10 @@ contract GaugeProxyV2 is
 
     /* ========== INITIALIZER ========== */
 
-    /// @param _firstDistribution first distribution epoch
+    /**
+     * @notice  Initializer
+     * @param   _firstDistribution  first distribution epoch
+     */
     function initialize(uint256 _firstDistribution) public initializer {
         TOKEN = IERC20Upgradeable(address(new MasterDill()));
         governance = msg.sender;
@@ -296,109 +319,13 @@ contract GaugeProxyV2 is
         chainIdWeights[_chainIdCounter] = 1;
     }
 
-    /* ========== INTERNAL METHODS ========== */
-    /// @notice Calculates weights and total weight
-    /// @param _owner Address of voter
-    /// @param _tokenVote array of gauge token addresses
-    /// @param _weights array of voted weights
-    /// @param _currentId current period ID
-    function _vote(
-        address _owner,
-        address[] memory _tokenVote,
-        int256[] memory _weights,
-        uint256 _currentId
-    ) internal {
-        _reset(_owner, _currentId);
-        uint256 _tokenCnt = _tokenVote.length;
-        int256 _weight = int256(DILL.balanceOf(_owner));
-        int256 _totalVoteWeight = 0;
-        int256 _usedWeight = 0;
-
-        for (uint256 i = 0; i < _tokenCnt; i++) {
-            _totalVoteWeight += (_weights[i] > 0 ? _weights[i] : -_weights[i]);
-        }
-
-        for (uint256 i = 0; i < _tokenCnt; i++) {
-            address _token = _tokenVote[i];
-            Gauge memory gauge = gauges[_token];
-            GaugeType gaugeType = gauge.gaugeType;
-
-            if (
-                gauge.gaugeAddress != address(0x0) &&
-                gaugeType != GaugeType.ROOT
-            ) {
-                int256 _tokenWeight = (_weights[i] *
-                    _weight *
-                    int256(chainIdWeights[gauge.chainId])) / _totalVoteWeight;
-                if (gauge.chainId > 0) {
-                    weights[_currentId][_token] = weights[
-                        tokenLastVotedPeriodId[_token]
-                    ][_token];
-                    tokenLastVotedPeriodId[_token] = _currentId;
-                }
-
-                weights[_currentId][_token] += _tokenWeight;
-                votes[_owner][_token] = _tokenWeight;
-                tokenVote[_owner].push(_token);
-
-                if (_tokenWeight < 0) _tokenWeight = -_tokenWeight;
-
-                _usedWeight += _tokenWeight;
-                totalWeight[_currentId] += _tokenWeight;
-            }
-        }
-        usedWeights[_owner] = _usedWeight;
-    }
-
-    /// @notice Reset votes to 0
-    /// @param _owner address of voter whose vote is to be reset
-    /// @param _currentId current period ID
-    function _reset(address _owner, uint256 _currentId) internal {
-        address[] storage _tokenVote = tokenVote[_owner];
-        uint256 _tokenVoteCnt = _tokenVote.length;
-        require(_currentId > 0, "Voting not started");
-
-        if (_currentId > lastVotedPeriodId) {
-            totalWeight[_currentId] = totalWeight[lastVotedPeriodId];
-            lastVotedPeriodId = _currentId;
-        }
-
-        for (uint256 i = 0; i < _tokenVoteCnt; i++) {
-            address _token = _tokenVote[i];
-            int256 _votes = votes[_owner][_token];
-
-            if (_votes != 0) {
-                totalWeight[_currentId] -= (_votes > 0 ? _votes : -_votes);
-                if (_currentId > tokenLastVotedPeriodId[_token]) {
-                    weights[_currentId][_token] = weights[
-                        tokenLastVotedPeriodId[_token]
-                    ][_token];
-
-                    tokenLastVotedPeriodId[_token] = _currentId;
-                }
-
-                Gauge memory gauge = gauges[_token];
-
-                if (gauge.chainId > 0) {
-                    uint256 chainId = gauge.chainId;
-                    address _rootGauge = rootGauge[chainId];
-                    weights[_currentId][_rootGauge] -= _votes;
-                }
-
-                weights[_currentId][_token] -= _votes;
-                votes[_owner][_token] = 0;
-            }
-        }
-
-        delete tokenVote[_owner];
-        // Ensure distribute _rewards are for current period
-        periodForDistribute[_currentId] = _currentId;
-    }
-
     /* ========== EXTERNAL METHODS ========== */
-    /// @notice Sets weights of other blockChains
-    /// @param _chainId Blockchain ID
-    /// @param _weight Blockchain's weight to be set
+
+    /**
+     * @notice  Sets weights of other blockChains
+     * @param   _chainId  Blockchain ID
+     * @param   _weight  Blockchain's weight to be set
+     */
     function setChainIdWeight(uint256 _chainId, uint256 _weight) external {
         require(msg.sender == governance, "GaugeProxy: !gov");
         require(
@@ -414,17 +341,21 @@ contract GaugeProxyV2 is
         emit GaugeTypeWeightUpdated(_chainId, _weight);
     }
 
-    /// @notice Reset votes to 0
-    /// @dev Can only reset owner's votes of current ID - calls internal method _reset
+    /**
+     * @notice  Reset votes to 0
+     * @dev     Can only reset owner's votes of current ID - calls internal method _reset
+     */
     function reset() external {
         uint256 currentId = getCurrentPeriodId();
         require(currentId > 0, "GaugeProxy: voting not started yet");
         _reset(msg.sender, currentId);
     }
 
-    /// @notice Vote with DILL on a gauge
-    /// @param _tokenVote Array of gauge token addresses user wants to vote for
-    /// @param _weights Array of weights user want to use for voting
+    /**
+     * @notice  Vote with DILL on a gauge
+     * @param   _tokenVote  Array of gauge token addresses user wants to vote for
+     * @param   _weights  Array of weights user want to use for voting
+     */
     function vote(address[] calldata _tokenVote, int256[] calldata _weights)
         external
     {
@@ -438,10 +369,12 @@ contract GaugeProxyV2 is
         delegations[msg.sender].blockDelegate[currentId] = true;
     }
 
-    /// @notice Sets delegate for voting on behalf of DILL holder
-    /// @param _delegateAddress Address of delegate
-    /// @param _periodsCount Number of periods owner wants to delegate his voting rights
-    /// @param _indefinite Whether or not owner wants to delegate indefinately
+    /**
+     * @notice  Sets delegate for voting on behalf of DILL holder
+     * @param   _delegateAddress  Address of delegate
+     * @param   _periodsCount  Number of periods owner wants to delegate his voting rights
+     * @param   _indefinite  Whether or not owner wants to delegate indefinately
+     */
     function setVotingDelegate(
         address _delegateAddress,
         uint256 _periodsCount,
@@ -478,7 +411,7 @@ contract GaugeProxyV2 is
         }
     }
 
-    /// @notice Revoke delegate's right to vote for delegator
+    /// @notice  Revoke delegate's right to vote for delegator
     function revokeDelegate() external {
         DelegateData storage _delegate = delegations[msg.sender];
         require(
@@ -493,12 +426,14 @@ contract GaugeProxyV2 is
         _delegate.endPeriod = currentPeriod - 1;
     }
 
-    /// @notice this function lets delegate to vote for its delegators
-    /// @param _tokenVote Array of gauge token addresses delegate wants to vote for
-    /// @param _weights  Array of weights delegate want to use for voting
-    /// @param _start Starting index of delegators from where delegate wants to start voting
-    /// @param _end Ending index of delegators from where delegate wants to start voting
-    /// @dev _start and _end are taken to avoid out of gas error in case large number of peopel delegate same address
+    /**
+     * @notice  this function lets delegate to vote for its delegators
+     * @dev     _start and _end are taken to avoid out of gas error in case large number of peopel delegate same address
+     * @param   _tokenVote  Array of gauge token addresses delegate wants to vote for
+     * @param   _weights  Array of weights delegate want to use for voting
+     * @param   _start  Starting index of delegators from where delegate wants to start voting
+     * @param   _end  Ending index of delegators from where delegate wants to start voting
+     */
     function voteFor(
         address[] calldata _tokenVote,
         int256[] calldata _weights,
@@ -518,7 +453,10 @@ contract GaugeProxyV2 is
         require(_start < _end, "GaugeProxy: bad _start");
         require(_end <= _deletgatedAddress.length, "GaugeProxy: bad _end");
 
-        require(_deletgatedAddress.length > 0, "GaugeProxy: no delegating address found");
+        require(
+            _deletgatedAddress.length > 0,
+            "GaugeProxy: no delegating address found"
+        );
 
         for (uint256 i = _start; i < _end; i++) {
             address _owner = _deletgatedAddress[i];
@@ -539,10 +477,12 @@ contract GaugeProxyV2 is
         }
     }
 
-    /// @notice Add new gauge
-    /// @param _token Address of gauge token
-    /// @param _chainId Chain ID where gauge exists
-    /// @param _gaugeAddress Address of gauge
+    /**
+     * @notice  Add new gauge
+     * @param   _token  Address of gauge token
+     * @param   _chainId  Chain ID where gauge exists
+     * @param   _gaugeAddress  Address of gauge
+     */
     function addGauge(
         address _token,
         uint256 _chainId,
@@ -552,7 +492,10 @@ contract GaugeProxyV2 is
         require(_chainId > 0, "GaugeProxy: invalid chain id");
 
         Gauge memory _gauge = gauges[_token];
-        require(gauges[_token].gaugeAddress == address(0x0), "GaugeProxy: exists");
+        require(
+            gauges[_token].gaugeAddress == address(0x0),
+            "GaugeProxy: exists"
+        );
 
         _gauge.gaugeAddress = _gaugeAddress;
         tokensByChainId[_chainId].push(_token);
@@ -563,10 +506,12 @@ contract GaugeProxyV2 is
         _tokens.push(_token);
     }
 
-    /// @notice Add new virtual gauge
-    /// @param _token Address of gauge token
-    /// @param _chainId Chain ID where gauge exists
-    /// @param _gaugeAddress Address of gauge
+    /**
+     * @notice  Add new virtual gauge
+     * @param   _token  Address of gauge token
+     * @param   _chainId  Chain ID where gauge exists
+     * @param   _gaugeAddress  Address of gauge
+     */
     function addVirtualGauge(
         address _token,
         uint256 _chainId,
@@ -574,7 +519,10 @@ contract GaugeProxyV2 is
     ) external {
         require(msg.sender == governance, "GaugeProxy: !gov");
         require(_chainId > 0, "GaugeProxy: invalid chain id");
-        require(_gaugeAddress != address(0), "GaugeProxy: invalid Gauge Address");
+        require(
+            _gaugeAddress != address(0),
+            "GaugeProxy: invalid Gauge Address"
+        );
 
         Gauge memory _gauge = gauges[_token];
 
@@ -588,10 +536,12 @@ contract GaugeProxyV2 is
         _tokens.push(_token);
     }
 
-    /// @notice Add new root gauge
-    /// @param _name Name of side chain
-    /// @param _weight Side chain weight
-    /// @param _rootGaugeAddress address of root gauge
+    /**
+     * @notice  Add new root gauge
+     * @param   _name  Name of side chain
+     * @param   _weight  Side chain weight
+     * @param   _rootGaugeAddress  address of root gauge
+     */
     function addNewSideChain(
         string calldata _name,
         uint256 _weight,
@@ -619,23 +569,34 @@ contract GaugeProxyV2 is
         emit NewGaugeType(0, _rootGaugeAddress, _name, _weight);
     }
 
-    /// @notice Allows Gov to delist a gauge
-    /// @param _token Address of gauge token
-    /// @dev A gauge can only be delisted when it has received -ve aggregate voting 5 times
+    /**
+     * @notice  Allows Gov to delist a gauge
+     * @dev     A gauge can only be delisted when it has received -ve aggregate voting 5 times
+     * @param   _token  Address of gauge token
+     */
     function delistGauge(address _token) external {
         require(msg.sender == governance, "GaugeProxy: !gov");
-        require(gauges[_token].gaugeAddress != address(0x0), "GaugeProxy: !exists");
+        require(
+            gauges[_token].gaugeAddress != address(0x0),
+            "GaugeProxy: !exists"
+        );
         require(
             gauges[_token].gaugeType != GaugeType.ROOT,
             "GaugeProxy: cannot delist root gauge"
         );
 
         uint256 currentId = getCurrentPeriodId();
-        require(distributionId == currentId, "GaugeProxy: all distributions completed");
+        require(
+            distributionId == currentId,
+            "GaugeProxy: all distributions completed"
+        );
 
         address _gauge = gauges[_token].gaugeAddress;
 
-        require(gaugeWithNegativeWeight[_gauge] >= 5, "GaugeProxy: censors < 5");
+        require(
+            gaugeWithNegativeWeight[_gauge] >= 5,
+            "GaugeProxy: censors < 5"
+        );
 
         uint256 chainId = gauges[_token].chainId;
         address _rootGauge = rootGauge[chainId];
@@ -663,8 +624,10 @@ contract GaugeProxyV2 is
         delete gauges[_token];
     }
 
-    /// @notice Sets MasterChef PID
-    /// @param _pid PID to set on MasterChef
+    /**
+     * @notice  Sets MasterChef PID
+     * @param   _pid  PID to set on MasterChef
+     */
     function setPID(uint256 _pid) external {
         require(msg.sender == governance, "GaugeProxy: !gauge gov");
         require(pid == 0, "GaugeProxy: pid has already been set");
@@ -672,10 +635,12 @@ contract GaugeProxyV2 is
         pid = _pid;
     }
 
-    /// @notice Distribute rewards to gauges
-    /// @param _start Starting index of gauges
-    /// @param _end Ending index of gauges
-    /// @dev _start and _end are taken to avoid out of gas error in case large number of gauges are listed
+    /**
+     * @notice  Distribute rewards to gauges
+     * @dev     _start and _end are taken to avoid out of gas error in case large number of gauges are listed
+     * @param   _start  Starting index of gauges
+     * @param   _end  Ending index of gauges
+     */
     function distribute(uint256 _start, uint256 _end) external {
         require(_start < _end, "GaugeProxy: bad _start");
         require(_end <= _tokens.length, "GaugeProxy: bad _end");
@@ -760,11 +725,14 @@ contract GaugeProxyV2 is
         }
     }
 
-    /// @notice Erc721a receiver
-    /// @param _operator NFT operator
-    /// @param _from NFT Owner
-    /// @param _tokenId NFT token ID
-    /// @param _data data
+    /**
+     * @notice  Erc721a receiver
+     * @param   _operator  NFT operator
+     * @param   _from  NFT Owner
+     * @param   _tokenId  NFT token ID
+     * @param   _data  data
+     * @return  bytes4  .
+     */
     function onERC721Received(
         address _operator,
         address _from,
@@ -772,8 +740,10 @@ contract GaugeProxyV2 is
         bytes calldata _data
     ) external override returns (bytes4) {}
 
-    /// @notice add PickleNFT contract
-    /// @param _contractAddress NFT contract address
+    /**
+     * @notice  add PickleNFT contract
+     * @param   _contractAddress  NFT contract address
+     */
     function setNftContract(address _contractAddress) external {
         require(
             msg.sender == governance,
@@ -782,9 +752,11 @@ contract GaugeProxyV2 is
         nftToken = IPickleNFT(_contractAddress);
     }
 
-    /// @notice deposit and lock assets in the contract
-    /// @param _tokenId NFT token ID
-    /// @param _periods Number of periods NFT is to be staked for
+    /**
+     * @notice  deposit and lock assets in the contract
+     * @param   _tokenId  NFT token ID
+     * @param   _periods  Number of periods NFT is to be staked for
+     */
     function depositAndLock(uint256 _tokenId, uint256 _periods) external {
         require(_tokenId >= 0, "GaugeProxy: token id Can't be negative");
         require(
@@ -795,11 +767,13 @@ contract GaugeProxyV2 is
         _deposit(_tokenId, msg.sender, _periods, getCurrentPeriodId());
     }
 
-    /// @notice Internal method to deposit and lock assets in the contract
-    /// @param _tokenId NFT token ID
-    /// @param _account Address of NFT owner
-    /// @param _periods Number of periods NFT is to be staked for
-    /// @param _currentPeriod Current period ID
+    /**
+     * @notice  Internal method to deposit and lock assets in the contract
+     * @param   _tokenId  NFT token ID
+     * @param   _account  Address of NFT owner
+     * @param   _periods  Number of periods NFT is to be staked for
+     * @param   _currentPeriod  Current period ID
+     */
     function _deposit(
         uint256 _tokenId,
         address _account,
@@ -820,8 +794,10 @@ contract GaugeProxyV2 is
         emit StakedNft(_account, _tokenId, _currentPeriod + _periods);
     }
 
-    /// @notice Withdraw staked NFT
-    /// @param _tokenId NFT ID
+    /**
+     * @notice  Withdraw staked NFT
+     * @param   _tokenId  NFT ID
+     */
     function withdraw(uint256 _tokenId) external {
         //Checking if stacked or not
         require(
@@ -842,8 +818,10 @@ contract GaugeProxyV2 is
 
     /* ========== PUBLIC METHODS ========== */
 
-    /// @notice Adjusts _owner's votes according to latest _owner's DILL balance
-    /// @param _owner Address of voter
+    /**
+     * @notice  Adjusts _owner's votes according to latest _owner's DILL balance
+     * @param   _owner  Address of voter
+     */
     function poke(address _owner) public {
         address[] memory _tokenVote = tokenVote[_owner];
         uint256 _tokenCnt = _tokenVote.length;
@@ -860,7 +838,8 @@ contract GaugeProxyV2 is
         _vote(_owner, _tokenVote, _weights, currentId);
     }
 
-    /// @notice Deposits mDILL into MasterChef
+    /// @notice  Deposits mDILL into MasterChef
+
     function deposit() public {
         require(pid > 0, "GaugeProxy: pid not initialized");
         IERC20Upgradeable _token = TOKEN;
@@ -870,11 +849,115 @@ contract GaugeProxyV2 is
         MASTER.deposit(pid, _balance);
     }
 
-    /// @notice Fetches Pickle
+    /// @notice  Fetches Pickle
     function collect() public {
         (uint256 _locked, ) = MASTER.userInfo(pid, address(this));
         MASTER.withdraw(pid, _locked);
         deposit();
+    }
+
+    /* ========== INTERNAL METHODS ========== */
+
+    /**
+     * @notice  Calculates weights and total weight
+     * @param   _owner  Address of voter
+     * @param   _tokenVote  array of gauge token addresses
+     * @param   _weights  array of voted weights
+     * @param   _currentId  current period ID
+     */
+    function _vote(
+        address _owner,
+        address[] memory _tokenVote,
+        int256[] memory _weights,
+        uint256 _currentId
+    ) internal {
+        _reset(_owner, _currentId);
+        uint256 _tokenCnt = _tokenVote.length;
+        int256 _weight = int256(DILL.balanceOf(_owner));
+        int256 _totalVoteWeight = 0;
+        int256 _usedWeight = 0;
+
+        for (uint256 i = 0; i < _tokenCnt; i++) {
+            _totalVoteWeight += (_weights[i] > 0 ? _weights[i] : -_weights[i]);
+        }
+
+        for (uint256 i = 0; i < _tokenCnt; i++) {
+            address _token = _tokenVote[i];
+            Gauge memory gauge = gauges[_token];
+            GaugeType gaugeType = gauge.gaugeType;
+
+            if (
+                gauge.gaugeAddress != address(0x0) &&
+                gaugeType != GaugeType.ROOT
+            ) {
+                int256 _tokenWeight = (_weights[i] *
+                    _weight *
+                    int256(chainIdWeights[gauge.chainId])) / _totalVoteWeight;
+                if (gauge.chainId > 0) {
+                    weights[_currentId][_token] = weights[
+                        tokenLastVotedPeriodId[_token]
+                    ][_token];
+                    tokenLastVotedPeriodId[_token] = _currentId;
+                }
+
+                weights[_currentId][_token] += _tokenWeight;
+                votes[_owner][_token] = _tokenWeight;
+                tokenVote[_owner].push(_token);
+
+                if (_tokenWeight < 0) _tokenWeight = -_tokenWeight;
+
+                _usedWeight += _tokenWeight;
+                totalWeight[_currentId] += _tokenWeight;
+            }
+        }
+        usedWeights[_owner] = _usedWeight;
+    }
+
+    /**
+     * @notice  Reset votes to 0
+     * @param   _owner  address of voter whose vote is to be reset
+     * @param   _currentId  current period ID
+     */
+    function _reset(address _owner, uint256 _currentId) internal {
+        address[] storage _tokenVote = tokenVote[_owner];
+        uint256 _tokenVoteCnt = _tokenVote.length;
+        require(_currentId > 0, "Voting not started");
+
+        if (_currentId > lastVotedPeriodId) {
+            totalWeight[_currentId] = totalWeight[lastVotedPeriodId];
+            lastVotedPeriodId = _currentId;
+        }
+
+        for (uint256 i = 0; i < _tokenVoteCnt; i++) {
+            address _token = _tokenVote[i];
+            int256 _votes = votes[_owner][_token];
+
+            if (_votes != 0) {
+                totalWeight[_currentId] -= (_votes > 0 ? _votes : -_votes);
+                if (_currentId > tokenLastVotedPeriodId[_token]) {
+                    weights[_currentId][_token] = weights[
+                        tokenLastVotedPeriodId[_token]
+                    ][_token];
+
+                    tokenLastVotedPeriodId[_token] = _currentId;
+                }
+
+                Gauge memory gauge = gauges[_token];
+
+                if (gauge.chainId > 0) {
+                    uint256 chainId = gauge.chainId;
+                    address _rootGauge = rootGauge[chainId];
+                    weights[_currentId][_rootGauge] -= _votes;
+                }
+
+                weights[_currentId][_token] -= _votes;
+                votes[_owner][_token] = 0;
+            }
+        }
+
+        delete tokenVote[_owner];
+        // Ensure distribute _rewards are for current period
+        periodForDistribute[_currentId] = _currentId;
     }
 
     /* ========== EVENTS ========== */
