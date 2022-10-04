@@ -28,54 +28,24 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     // Constant for various precisions
     uint256 private constant _MultiplierPrecision = 1e18;
-
-    IERC20 public immutable TOKEN;
     uint256 public constant DURATION = 7 days;
+    IERC20 public immutable TOKEN;
 
     // Lock time and multiplier
     uint256 public lockMaxMultiplier = uint256(25e17); // E18. 1x = e18
     uint256 public lockTimeForMaxMultiplier = 365 * 86400; // 1 year
     uint256 public lockTimeMin = 86400; // 1 day
+    uint256 public multiplierDecayPerSecond = uint256(48e9);
 
     //Reward addresses
     address[] public rewardTokens;
-    // reward token details
-    struct rewardTokenDetail {
-        uint256 index;
-        bool isActive;
-        address distributor;
-        uint256 rewardRate;
-        uint256 rewardPerTokenStored;
-        uint256 lastUpdateTime;
-        uint256 periodFinish;
-    }
-    mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
 
-    // Rewards tracking
-    mapping(address => mapping(uint256 => uint256))
-        private userRewardPerTokenPaid;
-    mapping(address => mapping(uint256 => uint256)) public rewards;
-    uint256[] private rewardPerTokenStored;
-    uint256 public multiplierDecayPerSecond = uint256(48e9);
-    mapping(address => uint256) private _lastUsedMultiplier;
-    mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
+    // Administrative booleans
+    bool public stakesUnlocked; // Release locked stakes in case of emergency
 
     // Balance tracking
     uint256 private _totalSupply;
     uint256 public derivedSupply;
-    mapping(address => uint256) private _balances;
-    mapping(address => uint256) public derivedBalances;
-    mapping(address => uint256) private _base;
-
-    // Delegate tracking
-    mapping(address => mapping(address => bool)) public stakingDelegates;
-
-    // Stake tracking
-    mapping(address => LockedStake) private _lockedStakes;
-
-    // Administrative booleans
-    bool public stakesUnlocked; // Release locked stakes in case of emergency
-    mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
 
     /* ========== STRUCTS ========== */
 
@@ -86,22 +56,40 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         uint256 lock_multiplier;
         bool isPermanentlyLocked;
     }
+    // reward token details
+    struct rewardTokenDetail {
+        uint256 index;
+        bool isActive;
+        address distributor;
+        uint256 rewardRate;
+        uint256 rewardPerTokenStored;
+        uint256 lastUpdateTime;
+        uint256 periodFinish;
+    }
+
+    // Rewards tracking
+    mapping(address => mapping(uint256 => uint256))
+        private _userRewardPerTokenPaid;
+    mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
+    mapping(address => mapping(uint256 => uint256)) public rewards;
+    mapping(address => uint256) private _lastUsedMultiplier;
+    mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
+    mapping(address => uint256) private _balances;
+    mapping(address => uint256) public derivedBalances;
+    mapping(address => uint256) private _base;
+    mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
+    mapping(address => mapping(address => bool)) public stakingDelegates; // Delegate tracking
+    mapping(address => LockedStake) private _lockedStakes; // Stake tracking
+
     //Instance of gaugeProxy
     IGaugeProxyV2 public gaugeProxy;
+
     /* ========== MODIFIERS ========== */
 
     modifier onlyDistribution(address _token) {
         require(
             msg.sender == rewardTokenDetails[_token].distributor,
             "Caller is not RewardsDistribution contract"
-        );
-        _;
-    }
-
-    modifier onlyGov() {
-        require(
-            msg.sender == governance,
-            "Operation allowed by only governance"
         );
         _;
     }
@@ -127,7 +115,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                 ];
                 if (token.isActive) {
                     rewards[account][i] = earnedArr[i];
-                    userRewardPerTokenPaid[account][i] = token
+                    _userRewardPerTokenPaid[account][i] = token
                         .rewardPerTokenStored;
                 }
             }
@@ -155,28 +143,27 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== VIEWS ========== */
 
+    /**
+     * @notice  Get total supply of TOKENS
+     * @return  uint256  Number of tokens (locked + deposited)
+     */
     function totalSupply() external view returns (uint256) {
         return _totalSupply;
     }
 
-    function balanceOf(address account) external view returns (uint256) {
-        return _balances[account];
+    /**
+     * @notice  Get TOKEN balance of user in this contract (locked + deposited)
+     * @param   _account  Address of user whose balance is to be fetched
+     * @return  uint256  of user (locked + deposited)
+     */
+    function balanceOf(address _account) external view returns (uint256) {
+        return _balances[_account];
     }
 
-    function lastTimeRewardApplicable() public {
-        for (uint256 i = 0; i < rewardTokens.length; i++) {
-            rewardTokenDetail memory token = rewardTokenDetails[
-                rewardTokens[i]
-            ];
-            if (token.isActive) {
-                rewardTokenDetails[rewardTokens[i]].lastUpdateTime = Math.min(
-                    block.timestamp,
-                    token.periodFinish
-                );
-            }
-        }
-    }
-
+    /**
+     * @notice  Get on going rewards for all reward tokens set for a period
+     * @return  rewardsPerDurationArr  Array of rewards for all set reward tokens
+     */
     function getRewardForDuration()
         external
         view
@@ -194,6 +181,53 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice  Get locked stakes for a given account
+     * @param   _account  Adress of user whose stakes are to be fetched
+     * @return  LockedStake  stakes of 'account'
+     */
+    function lockedStakesOf(address _account)
+        external
+        view
+        returns (LockedStake memory)
+    {
+        return _lockedStakes[_account];
+    }
+
+    /**
+     * @notice  Get multiplier, given the length of the lock
+     * @param   _secs  Length of the lock
+     * @return  uint256  Lock multiplier
+     */
+    function lockMultiplier(uint256 _secs) public view returns (uint256) {
+        uint256 lock_multiplier = uint256(_MultiplierPrecision) +
+            ((_secs * (lockMaxMultiplier - _MultiplierPrecision)) /
+                (lockTimeForMaxMultiplier));
+        if (lock_multiplier > lockMaxMultiplier)
+            lock_multiplier = lockMaxMultiplier;
+        return lock_multiplier;
+    }
+
+    /**
+     * @notice  Get decayed multiplier, given time elapesed since lock start time
+     * @param   _account  Address of user, for whose stake decayed multiplier is being calculated
+     * @param   _elapsedSeconds  Time elapesed since lock start time
+     * @return  uint256  Average decayed lock multiplier
+     */
+    function _averageDecayedLockMultiplier(
+        address _account,
+        uint256 _elapsedSeconds
+    ) internal view returns (uint256) {
+        return
+            (2 *
+                _lastUsedMultiplier[_account] -
+                (_elapsedSeconds - 1) *
+                multiplierDecayPerSecond) / 2;
+    }
+
+    /* ========== PUBLIC METHODS ========== */
+
+    /// @notice Calculate reward per token for all reward tokens set
     function rewardPerToken() public {
         if (_totalSupply != 0) {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
@@ -207,31 +241,42 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                         (((rewardTokenDetails[rewardTokens[i]].lastUpdateTime -
                             token.lastUpdateTime) *
                             token.rewardRate *
-                            1e18) / derivedSupply);
+                            _MultiplierPrecision) / derivedSupply);
                 }
             }
         }
     }
 
-    // All the locked stakes for a given account
-    function lockedStakesOf(address account)
-        external
-        view
-        returns (LockedStake memory)
-    {
-        return _lockedStakes[account];
+    /// @notice Calaculate lastUpdateTime for all reward tokens set
+    function lastTimeRewardApplicable() public {
+        for (uint256 i = 0; i < rewardTokens.length; i++) {
+            rewardTokenDetail memory token = rewardTokenDetails[
+                rewardTokens[i]
+            ];
+            if (token.isActive) {
+                rewardTokenDetails[rewardTokens[i]].lastUpdateTime = Math.min(
+                    block.timestamp,
+                    token.periodFinish
+                );
+            }
+        }
     }
 
-    function earned(address account)
+    /**
+     * @notice  Get rewards earned by account
+     * @param   _account  Address of user whose rewards are to be fetched
+     * @return  _newEarned  Array of rewards eraned by user for all reward tokens
+     */
+    function earned(address _account)
         public
-        returns (uint256[] memory newEarned)
+        returns (uint256[] memory _newEarned)
     {
         rewardPerToken();
-        newEarned = new uint256[](rewardTokens.length);
+        _newEarned = new uint256[](rewardTokens.length);
 
-        if (derivedBalances[account] == 0) {
+        if (derivedBalances[_account] == 0) {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
-                newEarned[i] = 0;
+                _newEarned[i] = 0;
             }
         } else {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
@@ -239,16 +284,22 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
                     rewardTokens[i]
                 ];
                 if (token.isActive) {
-                    newEarned[i] =
-                        ((derivedBalances[account] *
+                    _newEarned[i] =
+                        ((derivedBalances[_account] *
                             (token.rewardPerTokenStored -
-                                userRewardPerTokenPaid[account][i])) / 1e18) +
-                        rewards[account][i];
+                                _userRewardPerTokenPaid[_account][i])) /
+                            _MultiplierPrecision) +
+                        rewards[_account][i];
                 }
             }
         }
     }
 
+    /**
+     * @notice  Set new reward token
+     * @param   _rewardToken  Address of reward token
+     * @param   _distributionForToken  Address of distribution for '_rewardToken'
+     */
     function setRewardToken(address _rewardToken, address _distributionForToken)
         public
         onlyGov
@@ -265,6 +316,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokens.push(_rewardToken);
     }
 
+    /**
+     * @notice  Set reward token inactive
+     * @param   _rewardToken  Address of reward token
+     */
     function setRewardTokenInactive(address _rewardToken) public onlyGov {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
@@ -272,6 +327,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken] = token;
     }
 
+    /**
+     * @notice  Set distribution for already set reward token
+     * @param   _distributionForToken  Address which can distribute '_rewardToken'
+     * @param   _rewardToken  Address of reward token
+     */
     function setDisributionForToken(
         address _distributionForToken,
         address _rewardToken
@@ -287,27 +347,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken] = token;
     }
 
-    // Multiplier amount, given the length of the lock
-    function lockMultiplier(uint256 secs) public view returns (uint256) {
-        uint256 lock_multiplier = uint256(_MultiplierPrecision) +
-            ((secs * (lockMaxMultiplier - _MultiplierPrecision)) /
-                (lockTimeForMaxMultiplier));
-        if (lock_multiplier > lockMaxMultiplier)
-            lock_multiplier = lockMaxMultiplier;
-        return lock_multiplier;
-    }
-
-    function _averageDecayedLockMultiplier(
-        address account,
-        uint256 elapsedSeconds
-    ) internal view returns (uint256) {
-        return
-            (2 *
-                _lastUsedMultiplier[account] -
-                (elapsedSeconds - 1) *
-                multiplierDecayPerSecond) / 2;
-    }
-
+    /**
+     * @notice  Set delegate for staking on behalf of user
+     * @param   _delegate  Address of delegate
+     */
     function setStakingDelegate(address _delegate) public {
         require(
             stakingDelegates[msg.sender][_delegate],
@@ -317,21 +360,24 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         stakingDelegates[msg.sender][_delegate] = true;
     }
 
-    function derivedBalance(address account) public returns (uint256) {
-        uint256 _balance = _balances[account];
+    /**
+     * @notice  Get calculated derived balance (DillBoosted + LockedBoosted + NFTBoosted) for '_account'
+     * @param   _account  Address of user whose derived balance is to be calculated
+     * @return  uint256  Calculated derived balance (DillBoosted + LockedBoosted + NFTBoosted)
+     */
+    function derivedBalance(address _account) public returns (uint256) {
+        uint256 _balance = _balances[_account];
         uint256 _derived = (_balance * 40) / 100;
-        uint256 _adjusted = (((_totalSupply * DILL.balanceOf(account)) /
+        uint256 _adjusted = (((_totalSupply * DILL.balanceOf(_account)) /
             DILL.totalSupply()) * 60) / 100;
         uint256 dillBoostedDerivedBal = Math.min(
             _derived + _adjusted,
             _balance
         );
 
-        uint256 lockBoostedDerivedBal = 0;
-
-        LockedStake memory thisStake = _lockedStakes[account];
+        LockedStake memory thisStake = _lockedStakes[_account];
         uint256 lock_multiplier = thisStake.lock_multiplier;
-        uint256 lastRewardClaimTime = _lastRewardClaimTime[account];
+        uint256 lastRewardClaimTime = _lastRewardClaimTime[_account];
         // If the lock is expired
         if (
             thisStake.ending_timestamp <= block.timestamp &&
@@ -360,21 +406,20 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
             if (elapsedSeconds > 0) {
                 lock_multiplier = thisStake.isPermanentlyLocked
                     ? lockMaxMultiplier
-                    : _averageDecayedLockMultiplier(account, elapsedSeconds);
-                _lastUsedMultiplier[account] =
-                    _lastUsedMultiplier[account] -
+                    : _averageDecayedLockMultiplier(_account, elapsedSeconds);
+                _lastUsedMultiplier[_account] =
+                    _lastUsedMultiplier[_account] -
                     (elapsedSeconds - 1) *
                     multiplierDecayPerSecond;
             }
         }
         uint256 liquidity = thisStake.liquidity;
-        uint256 combined_boosted_amount = (liquidity * lock_multiplier) /
+        uint256 lockBoostedDerivedBal = (liquidity * lock_multiplier) /
             _MultiplierPrecision;
-        lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
-
+       
         uint256 nftBoostedDerivedBalance = 0;
-        if (gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)) {
-            uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
+        if (gaugeProxy.isStaked(_account) && gaugeProxy.isBoostable(_account)) {
+            uint256 tokenLevel = gaugeProxy.getTokenLevel(_account);
             uint256 nftLockMultiplier = (lockMaxMultiplier -
                 (10e17) *
                 tokenLevel) / 100;
@@ -390,38 +435,53 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== MUTATIVE FUNCTIONS ========== */
 
-    function kick(address account) public {
-        uint256 _derivedBalance = derivedBalances[account];
+    /**
+     * @notice  Calculate and update derived balance for '_account' and derived supply
+     * @param   _account  Address of user
+     */
+    function kick(address _account) public {
+        uint256 _derivedBalance = derivedBalances[_account];
         derivedSupply = derivedSupply - _derivedBalance;
-        _derivedBalance = derivedBalance(account);
-        derivedBalances[account] = _derivedBalance;
+        _derivedBalance = derivedBalance(_account);
+        derivedBalances[_account] = _derivedBalance;
         derivedSupply = derivedSupply + _derivedBalance;
     }
 
-    // Simple Deposits
-
+    /// @notice  Deposit all 'TOKEN' balance of user
     function depositAll() external {
         require(TOKEN.balanceOf(msg.sender) > 0, "Cannot deposit 0");
         _deposit(TOKEN.balanceOf(msg.sender), msg.sender, 0, 0, false, true);
     }
 
-    function depositFor(uint256 amount, address account) external {
-        require(amount > 0, "Cannot deposit 0");
+    /**
+     * @notice  Deposit 'amount' 'TOKEN' on user's behalf
+     * @dev     'TOKEN' owner need to approve delegate to deposit token on owner's behalf
+     * @param   _amount  Number of 'TOKEN' to be deposited
+     * @param   _account  Address of 'TOKEN' owner
+     */
+    function depositFor(uint256 _amount, address _account) external {
+        require(_amount > 0, "Cannot deposit 0");
         require(
-            stakingDelegates[account][msg.sender],
+            stakingDelegates[_account][msg.sender],
             "Only registerd delegates can deposit for their deligator"
         );
-        _deposit(amount, account, 0, 0, false, true);
+        _deposit(_amount, _account, 0, 0, false, true);
     }
 
-    function deposit(uint256 amount) external {
-        require(amount > 0, "Cannot deposit 0");
-        _deposit(amount, msg.sender, 0, 0, false, true);
+    /// @notice  Deposit '_amount' 'TOKEN'
+    function deposit(uint256 _amount) external {
+        require(_amount > 0, "Cannot deposit 0");
+        _deposit(_amount, msg.sender, 0, 0, false, true);
     }
 
-    function depositAllAndLock(uint256 secs, bool isPermanentlyLocked)
+    /**
+     * @notice  Deposit and lock all 'TOKEN' balance of user
+     * @param   _secs  Time period to lock tokens
+     * @param   _isPermanentlyLocked  Whether or not to lock tokens perma  nently
+     */
+    function depositAllAndLock(uint256 _secs, bool _isPermanentlyLocked)
         external
-        lockable(secs)
+        lockable(_secs)
     {
         require(TOKEN.balanceOf(msg.sender) > 0, "Cannot stake 0");
         LockedStake memory thisStake = _lockedStakes[msg.sender];
@@ -436,13 +496,20 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         _deposit(
             TOKEN.balanceOf(msg.sender),
             msg.sender,
-            secs,
+            _secs,
             block.timestamp,
-            isPermanentlyLocked,
+            _isPermanentlyLocked,
             false
         );
     }
 
+    /**
+     * @notice  Deposit and lock 'amount' 'TOKEN' on user's behalf
+     * @param   amount  Number of tokens to be deposited locked
+     * @param   account  'TOKEN' owners address
+     * @param   secs  Time period to lock tokens
+     * @param   isPermanentlyLocked  Whether or not lock tokens permanently
+     */
     function depositForAndLock(
         uint256 amount,
         address account,
@@ -473,6 +540,13 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice  Deposit and lock 'amount' 'TOKEN' on user's behalf
+     * @dev     This method can also be used on existing stake to increase stake amount, lock time or lock permanently e
+     * @param   amount  Number of tokens to be deposited locked
+     * @param   secs  Time period to lock tokens
+     * @param   isPermanentlyLocked  Whether or not lock tokens permanently
+     */
     function depositAndLock(
         uint256 amount,
         uint256 secs,
@@ -498,6 +572,10 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice  Add tokens from deposit to stake
+     * @param   _amount  Number of token to to add to stake from users normal deposit
+     */
     function addBalanceToStake(uint256 _amount) external {
         LockedStake memory _lockedStake = _lockedStakes[msg.sender];
         require(
@@ -512,6 +590,16 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         _lockedStakes[msg.sender].liquidity += _amount;
     }
 
+    /**
+     * @notice  Deposit internal function
+     * @dev     This method can handle normal deposit, stake creation and update
+     * @param   amount  Number of tokens to be deposited locked
+     * @param   account  Address of user whose tokens are being deposited/locked
+     * @param   secs  Time period to lock tokens
+     * @param   startTimestamp  Start time stamp of stake
+     * @param   isPermanentlyLocked  Whether or not lock tokens permanently
+     * @param   depositOnly  whether tokens are only deposited only or not
+     */
     function _deposit(
         uint256 amount,
         address account,
@@ -562,15 +650,31 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         emit Staked(account, amount, secs);
     }
 
+    /**
+     * @notice  Withdraw from non staked balance of user
+     * @dev     Can be withdrawn partially
+     * @param   _amount  Amount of tokens to withdraw
+     * @return  uint256  Amount withdrawn
+     */
     function withdrawNonStaked(uint256 _amount) public returns (uint256) {
         require(_amount > 0, "Amount must be greater than 0");
         return _withdraw(msg.sender, _amount);
     }
 
+    /**
+     * @notice  Withdraw unlocked stake of user
+     * @dev     Complete stake will be withdrawn at once
+     * @return  uint256  Amount withdrawn
+     */
     function withdrawUnlockedStake() public returns (uint256) {
         return _withdraw(msg.sender, 0);
     }
 
+    /**
+     * @notice  Withdraw All balance of user staked and normally deposited
+     * @dev     Works only when stake is unlocked
+     * @return  uint256  Amount withdrawn
+     */
     function withdrawAll() public returns (uint256) {
         return
             withdrawUnlockedStake() +
@@ -579,6 +683,13 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
             );
     }
 
+    /**
+     * @notice  Internal method to withdraw tokens
+     * @dev     In case of unlocked stake withdrawl _amount = 0
+     * @param   _account  Address of liquidity holder
+     * @param   _amount  Amount to be withdrawn
+     * @return  uint256  Amount withdrawn
+     */
     function _withdraw(address _account, uint256 _amount)
         internal
         nonReentrant
@@ -616,6 +727,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         return _amount;
     }
 
+    /// @notice Claim reward accumulated
     function getReward() public nonReentrant updateReward(msg.sender, true) {
         uint256 reward;
 
@@ -631,6 +743,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice  Get reward accumulated in particular reward token
+     * @param   account  Address of user
+     * @param   _rewardToken  Address of set reward token
+     */
     function getRewardByToken(address account, address _rewardToken)
         public
         nonReentrant
@@ -649,6 +766,7 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         }
     }
 
+    /// @notice Exit from Gauge i.e. Withdraw complete liquidity and claim reward
     function exit() external {
         withdrawAll();
         getReward();
@@ -656,6 +774,11 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
+    /**
+     * @notice  Fetch reward to distribute
+     * @param   _rewardToken  Address of reward token
+     * @param   _reward  Amount to be fetched
+     */
     function notifyRewardAmount(address _rewardToken, uint256 _reward)
         external
         onlyDistribution(_rewardToken)
@@ -699,40 +822,24 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken] = token;
     }
 
-    function setMultipliers(uint256 _lock_max_multiplier) external onlyGov {
-        require(
-            _lock_max_multiplier >= uint256(1e18),
-            "Multiplier must be greater than or equal to 1e18"
-        );
-        lockMaxMultiplier = _lock_max_multiplier;
-        emit LockedStakeMaxMultiplierUpdated(lockMaxMultiplier);
-    }
-
+    /**
+     * @notice  Set Gauge-Proxy contract
+     * @param   _gaugeProxy  Address of Gauge-Proxy contract
+     */
     function setGaugeProxy(address _gaugeProxy) external onlyGov {
         require(_gaugeProxy != address(0), "Address Can't be null");
         gaugeProxy = IGaugeProxyV2(_gaugeProxy);
     }
 
-    function setMaxRewardsDuration(uint256 _lockTimeForMaxMultiplier)
-        external
-        onlyGov
-    {
-        require(
-            _lockTimeForMaxMultiplier >= 86400,
-            "Rewards duration too short"
-        );
-        // require(
-        //     periodFinish == 0 || block.timestamp > periodFinish,
-        //     "Reward period incomplete"
-        // );
-        lockTimeForMaxMultiplier = _lockTimeForMaxMultiplier;
-        emit MaxRewardsDurationUpdated(lockTimeForMaxMultiplier);
-    }
-
+    /// @notice Unlock stakes for all users
     function unlockStakes() external onlyGov {
         stakesUnlocked = !stakesUnlocked;
     }
 
+    /**
+     * @notice  Unlock stakes for a particular user
+     * @param   account  Address of user whose stake is to be uncloked
+     */
     function unlockStakeForAccount(address account) external onlyGov {
         stakesUnlockedForAccount[account] = !stakesUnlockedForAccount[account];
     }

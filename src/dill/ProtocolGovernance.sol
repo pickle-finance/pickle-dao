@@ -1,9 +1,18 @@
 // SPDX-License-Identifier: SEE LICENSE IN LICENSE
 pragma solidity ^0.8.1;
+
 contract ProtocolGovernance {
     /// @notice governance address for the governance contract
     address public governance;
     address public pendingGovernance;
+
+    modifier onlyGov() {
+        require(
+            msg.sender == governance,
+            "Operation allowed by only governance"
+        );
+        _;
+    }
 
     /**
      * @notice Allows governance to change governance (for future upgradability)
