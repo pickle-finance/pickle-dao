@@ -23,23 +23,36 @@ contract VirtualGaugeV2 is
     VirtualBalanceWrapper
 {
     using SafeERC20 for IERC20;
-    // Token addresses
+
+    /// @notice Token addresses
     IERC20 public constant DILL =
         IERC20(0xbBCf169eE191A1Ba7371F30A1C344bFC498b29Cf);
 
-    // Constant for various precisions
+    /// @notice Constant for various precisions
     uint256 private constant _MultiplierPrecision = 1e18;
     uint256 public constant DURATION = 7 days;
+    uint256 public multiplierDecayPerSecond = uint256(48e9);
 
-    // Lock time and multiplier
+    /// @notice Lock time and multiplier
     uint256 public lockMaxMultiplier = uint256(25e17); // E18. 1x = e18
     uint256 public lockTimeForMaxMultiplier = 365 * 86400; // 1 year
     uint256 public lockTimeMin = 86400; // 1 day
 
-    //Reward addresses
+    /// @notice Reward addresses
     address[] public rewardTokens;
 
-    // reward token details
+    /// @notice Balance tracking
+    uint256 public derivedSupply;
+
+    /// @notice Release locked stakes in case of emergency; Administrative booleans
+    bool public stakesUnlocked;
+    /* ========== STRUCTS & ENUM ========== */
+    enum GaugeType {
+        REGULAR,
+        VIRTUAL,
+        ROOT
+    }
+    /// @notice reward token details
     struct rewardTokenDetail {
         uint256 index;
         bool isActive;
@@ -49,32 +62,8 @@ contract VirtualGaugeV2 is
         uint256 lastUpdateTime;
         uint256 periodFinish;
     }
-    mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
 
-    // Rewards tracking
-    mapping(address => mapping(uint256 => uint256))
-        private userRewardPerTokenPaid;
-    mapping(address => mapping(uint256 => uint256)) public rewards;
-    mapping(address => bool) public authorisedAddress;
-    // uint256[] private rewardPerTokenStored;
-    uint256 public multiplierDecayPerSecond = uint256(48e9);
-    mapping(address => uint256) private _lastUsedMultiplier;
-    mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
-
-    // Balance tracking
-    uint256 public derivedSupply;
-    mapping(address => uint256) public derivedBalances;
-    mapping(address => uint256) private _base;
-
-    // Stake tracking
-    mapping(address => LockedStake) private _lockedStakes;
-
-    // Administrative booleans
-    bool public stakesUnlocked; // Release locked stakes in case of emergency
-    mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
-
-    /* ========== STRUCTS ========== */
-
+    /// @notice Locked stake details
     struct LockedStake {
         uint256 startTimestamp;
         uint256 liquidity;
@@ -83,22 +72,28 @@ contract VirtualGaugeV2 is
         bool isPermanentlyLocked;
     }
 
-    //Instance of gaugeProxy
+    /* ========== MAPPINGS ========== */
+    mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
+    mapping(address => mapping(uint256 => uint256))
+        private _userRewardPerTokenPaid;
+    mapping(address => mapping(uint256 => uint256)) public rewards;
+    mapping(address => bool) public authorisedAddress;
+    mapping(address => uint256) private _lastUsedMultiplier;
+    mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
+    mapping(address => uint256) public derivedBalances;
+    mapping(address => uint256) private _base;
+    mapping(address => LockedStake) private _lockedStakes; // Stake tracking
+    mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
+
+    /// @notice Instance of gaugeProxy
     IGaugeProxyV2 public gaugeProxy;
+
     /* ========== MODIFIERS ========== */
 
     modifier onlyDistribution(address _token) {
         require(
             msg.sender == rewardTokenDetails[_token].distributor,
             "Caller is not RewardsDistribution contract"
-        );
-        _;
-    }
-
-    modifier onlyGov() {
-        require(
-            msg.sender == governance,
-            "Operation allowed by only governance"
         );
         _;
     }
@@ -124,7 +119,7 @@ contract VirtualGaugeV2 is
                 ];
                 if (token.isActive) {
                     rewards[account][i] = earnedArr[i];
-                    userRewardPerTokenPaid[account][i] = token
+                    _userRewardPerTokenPaid[account][i] = token
                         .rewardPerTokenStored;
                 }
             }
@@ -157,20 +152,11 @@ contract VirtualGaugeV2 is
     }
 
     /* ========== VIEWS ========== */
-    function lastTimeRewardApplicable() public {
-        for (uint256 i = 0; i < rewardTokens.length; i++) {
-            rewardTokenDetail memory token = rewardTokenDetails[
-                rewardTokens[i]
-            ];
-            if (token.isActive) {
-                rewardTokenDetails[rewardTokens[i]].lastUpdateTime = Math.min(
-                    block.timestamp,
-                    token.periodFinish
-                );
-            }
-        }
-    }
 
+    /**
+     * @notice  Get on going rewards for all reward tokens set for a period
+     * @return  rewardsPerDurationArr  Array of rewards for all set reward tokens
+     */
     function getRewardForDuration()
         external
         view
@@ -188,46 +174,80 @@ contract VirtualGaugeV2 is
         }
     }
 
-    // Multiplier amount, given the length of the lock
-    function lockMultiplier(uint256 secs) public view returns (uint256) {
+    /**
+     * @notice  Get multiplier, given the length of the lock
+     * @param   _secs  Length of the lock
+     * @return  uint256  Lock multiplier
+     */
+    function lockMultiplier(uint256 _secs) public view returns (uint256) {
         uint256 lock_multiplier = uint256(_MultiplierPrecision) +
-            ((secs * (lockMaxMultiplier - _MultiplierPrecision)) /
+            ((_secs * (lockMaxMultiplier - _MultiplierPrecision)) /
                 (lockTimeForMaxMultiplier));
         if (lock_multiplier > lockMaxMultiplier)
             lock_multiplier = lockMaxMultiplier;
         return lock_multiplier;
     }
 
+    /**
+     * @notice  Get decayed multiplier, given time elapesed since lock start time
+     * @param   _account  Address of user, for whose stake decayed multiplier is being calculated
+     * @param   _elapsedSeconds  Time elapesed since lock start time
+     * @return  uint256  Average decayed lock multiplier
+     */
     function _averageDecayedLockMultiplier(
-        address account,
-        uint256 elapsedSeconds
+        address _account,
+        uint256 _elapsedSeconds
     ) internal view returns (uint256) {
         return
             (2 *
-                _lastUsedMultiplier[account] -
-                (elapsedSeconds - 1) *
+                _lastUsedMultiplier[_account] -
+                (_elapsedSeconds - 1) *
                 multiplierDecayPerSecond) / 2;
     }
 
-    // All the locked stakes for a given account
-    function lockedStakesOf(address account)
+    /**
+     * @notice  Get locked stakes for a given account
+     * @param   _account  Adress of user whose stakes are to be fetched
+     * @return  LockedStake  stakes of 'account'
+     */
+    function lockedStakesOf(address _account)
         external
         view
         returns (LockedStake memory)
     {
-        return _lockedStakes[account];
+        return _lockedStakes[_account];
     }
 
-    function earned(address account)
+    /// @notice Calaculate lastUpdateTime for all reward tokens set
+    function lastTimeRewardApplicable() public {
+        for (uint256 i = 0; i < rewardTokens.length; i++) {
+            rewardTokenDetail memory token = rewardTokenDetails[
+                rewardTokens[i]
+            ];
+            if (token.isActive) {
+                rewardTokenDetails[rewardTokens[i]].lastUpdateTime = Math.min(
+                    block.timestamp,
+                    token.periodFinish
+                );
+            }
+        }
+    }
+
+    /**
+     * @notice  Get rewards earned by account
+     * @param   _account  Address of user whose rewards are to be fetched
+     * @return  _newEarned  Array of rewards eraned by user for all reward tokens
+     */
+    function earned(address _account)
         public
-        returns (uint256[] memory newEarned)
+        returns (uint256[] memory _newEarned)
     {
         rewardPerToken();
-        newEarned = new uint256[](rewardTokens.length);
+        _newEarned = new uint256[](rewardTokens.length);
 
-        if (derivedBalances[account] == 0) {
+        if (derivedBalances[_account] == 0) {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
-                newEarned[i] = 0;
+                _newEarned[i] = 0;
             }
         } else {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
@@ -235,16 +255,18 @@ contract VirtualGaugeV2 is
                     rewardTokens[i]
                 ];
                 if (token.isActive) {
-                    newEarned[i] =
-                        ((derivedBalances[account] *
+                    _newEarned[i] =
+                        ((derivedBalances[_account] *
                             (token.rewardPerTokenStored -
-                                userRewardPerTokenPaid[account][i])) / 1e18) +
-                        rewards[account][i];
+                                _userRewardPerTokenPaid[_account][i])) /
+                            _MultiplierPrecision) +
+                        rewards[_account][i];
                 }
             }
         }
     }
 
+    /// @notice Calculate reward per token for all reward tokens set
     function rewardPerToken() public {
         if (totalSupply() != 0) {
             for (uint256 i = 0; i < rewardTokens.length; i++) {
@@ -258,44 +280,64 @@ contract VirtualGaugeV2 is
                         (((rewardTokenDetails[rewardTokens[i]].lastUpdateTime -
                             token.lastUpdateTime) *
                             token.rewardRate *
-                            1e18) / derivedSupply);
+                            _MultiplierPrecision) / derivedSupply);
                 }
             }
         }
     }
 
+    /**
+     * @notice  Set jar
+     * @dev     Works only when Jar is not set
+     * @param   _jar  Address of Jar
+     */
     function setJar(address _jar) external onlyGov {
         require(_jar != address(0), "cannot set to zero");
         require(_jar != address(jar), "Jar is already set");
         jar = IJar(_jar);
     }
 
-    function setAuthoriseAddress(address _account, bool value)
+    /**
+     * @notice  Set or revoke authorised address
+     * @dev     There can be multiple authorised addresses
+     * @param   _account  Address to be authorised
+     * @param   _value  Whether to set or revoke address authorisation
+     */
+    function setAuthoriseAddress(address _account, bool _value)
         external
         onlyGov
     {
         require(
-            authorisedAddress[_account] != value,
+            authorisedAddress[_account] != _value,
             "address is already set to given value"
         );
-        authorisedAddress[_account] = value;
+        authorisedAddress[_account] = _value;
     }
 
+    /**
+     * @notice  Set new reward token
+     * @param   _rewardToken  Address of reward token
+     * @param   _distributionForToken  Address of distribution for '_rewardToken'
+     */
     function setRewardToken(address _rewardToken, address _distributionForToken)
         public
         onlyGov
     {
         rewardTokenDetail memory token;
-        rewardTokenDetails[_rewardToken].isActive = true;
-        rewardTokenDetails[_rewardToken].index = rewardTokens.length;
-        rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
-        rewardTokenDetails[_rewardToken].rewardRate = 0;
-        rewardTokenDetails[_rewardToken].rewardPerTokenStored = 0;
-        rewardTokenDetails[_rewardToken].periodFinish = 0;
-
+        token.isActive = true;
+        token.index = rewardTokens.length;
+        token.distributor = _distributionForToken;
+        token.rewardRate = 0;
+        token.rewardPerTokenStored = 0;
+        token.periodFinish = 0;
+        rewardTokenDetails[_rewardToken] = token;
         rewardTokens.push(_rewardToken);
     }
 
+    /**
+     * @notice  Set reward token inactive
+     * @param   _rewardToken  Address of reward token
+     */
     function setRewardTokenInactive(address _rewardToken) public onlyGov {
         require(
             rewardTokenDetails[_rewardToken].isActive,
@@ -304,6 +346,11 @@ contract VirtualGaugeV2 is
         rewardTokenDetails[_rewardToken].isActive = false;
     }
 
+    /**
+     * @notice  Set distribution for already set reward token
+     * @param   _distributionForToken  Address which can distribute '_rewardToken'
+     * @param   _rewardToken  Address of reward token
+     */
     function setDisributionForToken(
         address _distributionForToken,
         address _rewardToken
@@ -320,10 +367,15 @@ contract VirtualGaugeV2 is
         rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
-    function derivedBalance(address account) public returns (uint256) {
-        uint256 _balance = balanceOf(account);
+    /**
+     * @notice  Get calculated derived balance (DillBoosted + LockedBoosted + NFTBoosted) for '_account'
+     * @param   _account  Address of user whose derived balance is to be calculated
+     * @return  uint256  Calculated derived balance (DillBoosted + LockedBoosted + NFTBoosted)
+     */
+    function derivedBalance(address _account) public returns (uint256) {
+        uint256 _balance = balanceOf(_account);
         uint256 _derived = (_balance * 40) / 100;
-        uint256 _adjusted = (((totalSupply() * DILL.balanceOf(account)) /
+        uint256 _adjusted = (((totalSupply() * DILL.balanceOf(_account)) /
             DILL.totalSupply()) * 60) / 100;
         uint256 dillBoostedDerivedBal = Math.min(
             _derived + _adjusted,
@@ -332,9 +384,9 @@ contract VirtualGaugeV2 is
 
         uint256 lockBoostedDerivedBal = 0;
 
-        LockedStake memory thisStake = _lockedStakes[account];
+        LockedStake memory thisStake = _lockedStakes[_account];
         uint256 lock_multiplier = thisStake.lock_multiplier;
-        uint256 lastRewardClaimTime = _lastRewardClaimTime[account];
+        uint256 lastRewardClaimTime = _lastRewardClaimTime[_account];
         // If the lock is expired
         if (
             thisStake.endingTimestamp <= block.timestamp &&
@@ -363,9 +415,9 @@ contract VirtualGaugeV2 is
             if (elapsedSeconds > 0) {
                 lock_multiplier = thisStake.isPermanentlyLocked
                     ? lockMaxMultiplier
-                    : _averageDecayedLockMultiplier(account, elapsedSeconds);
-                _lastUsedMultiplier[account] =
-                    _lastUsedMultiplier[account] -
+                    : _averageDecayedLockMultiplier(_account, elapsedSeconds);
+                _lastUsedMultiplier[_account] =
+                    _lastUsedMultiplier[_account] -
                     (elapsedSeconds - 1) *
                     multiplierDecayPerSecond;
             }
@@ -376,8 +428,8 @@ contract VirtualGaugeV2 is
         lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         uint256 nftBoostedDerivedBalance = 0;
-        if (gaugeProxy.isStaked(account) && gaugeProxy.isBoostable(account)) {
-            uint256 tokenLevel = gaugeProxy.getTokenLevel(account);
+        if (gaugeProxy.isStaked(_account) && gaugeProxy.isBoostable(_account)) {
+            uint256 tokenLevel = gaugeProxy.getTokenLevel(_account);
             uint256 nftLockMultiplier = (lockMaxMultiplier -
                 (10e17) *
                 tokenLevel) / 100;
@@ -393,101 +445,154 @@ contract VirtualGaugeV2 is
 
     /* ========== MUTATIVE FUNCTIONS ========== */
 
-    function kick(address account) public {
-        uint256 _derivedBalance = derivedBalances[account];
+    /**
+     * @notice  Calculate and update derived balance for '_account' and derived supply
+     * @param   _account  Address of user
+     */
+    function kick(address _account) public {
+        uint256 _derivedBalance = derivedBalances[_account];
         derivedSupply = derivedSupply - _derivedBalance;
-        _derivedBalance = derivedBalance(account);
-        derivedBalances[account] = _derivedBalance;
+        _derivedBalance = derivedBalance(_account);
+        derivedBalances[_account] = _derivedBalance;
         derivedSupply = derivedSupply + _derivedBalance;
     }
 
-    function depositFor(uint256 amount, address account)
+    /**
+     * @notice  Deposit 'amount' 'TOKEN' on user's behalf, can be executed by Jar or authorised address only
+     * @dev     'TOKEN' owner need to approve Jar or authorised address to deposit token on owner's behalf
+     * @param   _amount  Number of 'TOKEN' to be deposited
+     * @param   _account  Address of 'TOKEN' owner
+     */
+    function depositFor(uint256 _amount, address _account)
         external
         onlyJarAndAuthorised
     {
-        require(amount > 0, "Cannot deposit 0");
-        _deposit(amount, account, 0, 0, false);
+        require(_amount > 0, "Cannot deposit 0");
+        _deposit(_amount, _account, 0, 0, false);
     }
 
+    /**
+     * @notice  Deposit and lock 'amount' 'TOKEN' on user's behalf, can be executed by Jar or authorised address only
+     * @dev     'TOKEN' owner need to approve Jar or authorised address to deposit token on owner's behalf
+     * @param   _amount  Number of tokens to be deposited and locked
+     * @param   _account  'TOKEN' owners address
+     * @param   _secs  Time period to lock tokens
+     * @param   _isPermanentlyLocked  Whether or not lock tokens permanently
+     */
     function depositForAndLock(
-        uint256 amount,
-        address account,
-        uint256 secs,
-        bool isPermanentlyLocked
-    ) external lockable(secs) onlyJarAndAuthorised {
-        require(amount > 0, "Cannot deposit 0");
-        LockedStake memory thisStake = _lockedStakes[account];
+        uint256 _amount,
+        address _account,
+        uint256 _secs,
+        bool _isPermanentlyLocked
+    ) external lockable(_secs) onlyJarAndAuthorised {
+        require(_amount > 0, "Cannot deposit 0");
+        LockedStake memory thisStake = _lockedStakes[_account];
         // Check if stake already exists and if it is unlocked
         if (thisStake.liquidity > 0) {
             require(
-                (!stakesUnlocked || !stakesUnlockedForAccount[account]) &&
+                (!stakesUnlocked || !stakesUnlockedForAccount[_account]) &&
                     (thisStake.endingTimestamp > block.timestamp),
                 "Please withdraw your unlocked stake first"
             );
         }
-        _deposit(amount, account, secs, block.timestamp, isPermanentlyLocked);
+        _deposit(
+            _amount,
+            _account,
+            _secs,
+            block.timestamp,
+            _isPermanentlyLocked
+        );
     }
 
-    function addBalanceToStakeFor(address _account, uint256 _amount) external {
+    /**
+     * @notice  Add tokens from deposit to stake
+     * @param   _account  Number of token to to add to stake from users normal deposit
+     * @param   _amount  Number of token to to add to stake from users normal deposit
+     */
+    function addBalanceToStake(address _account, uint256 _amount) external {
         LockedStake memory _lockedStake = _lockedStakes[_account];
         require(
             (!stakesUnlocked || !stakesUnlockedForAccount[_account]) &&
-                _lockedStake.ending_timestamp > block.timestamp,
+                _lockedStake.endingTimestamp > block.timestamp,
             "No stake found"
         );
         require(
-            _amount + _lockedStake.liquidity <= _balances[_account],
+            _amount + _lockedStake.liquidity <= balanceOf(_account),
             "Amount must be less that or equal to your non-staked balance"
         );
         _lockedStakes[_account].liquidity += _amount;
     }
 
+    /**
+     * @notice  Deposit internal function
+     * @dev     This method can handle normal deposit, stake creation and update
+     * @param   _amount  Number of tokens to be deposited locked
+     * @param   _account  Address of user whose tokens are being deposited/locked
+     * @param   _secs  Time period to lock tokens
+     * @param   _startTimestamp  Start time stamp of stake
+     * @param   _isPermanentlyLocked  Whether or not lock tokens permanently
+     */
     function _deposit(
-        uint256 amount,
-        address account,
-        uint256 secs,
-        uint256 startTimestamp,
-        bool isPermanentlyLocked
-    ) internal nonReentrant updateReward(account, false) {
-        LockedStake memory _lockedStake = _lockedStakes[account];
+        uint256 _amount,
+        address _account,
+        uint256 _secs,
+        uint256 _startTimestamp,
+        bool _isPermanentlyLocked
+    ) internal nonReentrant updateReward(_account, false) {
+        LockedStake memory _lockedStake = _lockedStakes[_account];
 
         if (
-            startTimestamp > 0 &&
+            _startTimestamp > 0 &&
             (_lockedStake.startTimestamp == 0 ||
                 (!_lockedStake.isPermanentlyLocked &&
-                    _lockedStake.endingTimestamp <= startTimestamp))
+                    _lockedStake.endingTimestamp <= _startTimestamp))
         ) {
-            _lockedStake.startTimestamp = startTimestamp;
+            _lockedStake.startTimestamp = _startTimestamp;
         }
 
-        if (secs + _lockedStake.startTimestamp > _lockedStake.endingTimestamp) {
-            uint256 MaxMultiplier = lockMultiplier(secs);
-            _lockedStake.endingTimestamp = _lockedStake.startTimestamp + secs;
+        if (
+            _secs + _lockedStake.startTimestamp > _lockedStake.endingTimestamp
+        ) {
+            uint256 MaxMultiplier = lockMultiplier(_secs);
+            _lockedStake.endingTimestamp = _lockedStake.startTimestamp + _secs;
             _lockedStake.lock_multiplier = MaxMultiplier;
-            _lastUsedMultiplier[account] = MaxMultiplier;
+            _lastUsedMultiplier[_account] = MaxMultiplier;
         }
 
-        if (isPermanentlyLocked && !_lockedStake.isPermanentlyLocked) {
-            _lockedStake.isPermanentlyLocked = isPermanentlyLocked;
+        if (_isPermanentlyLocked && !_lockedStake.isPermanentlyLocked) {
+            _lockedStake.isPermanentlyLocked = _isPermanentlyLocked;
         }
 
-        _lockedStakes[account] = _lockedStake;
+        _lockedStakes[_account] = _lockedStake;
 
         // Needed for edge case if the staker only claims once, and after the lock expired
-        if (_lastRewardClaimTime[account] == 0)
-            _lastRewardClaimTime[account] = block.timestamp;
+        if (_lastRewardClaimTime[_account] == 0)
+            _lastRewardClaimTime[_account] = block.timestamp;
 
-        emit Staked(account, amount, secs);
+        emit Staked(_account, _amount, _secs);
     }
 
-    function withdrawNonStaked(address account, uint256 _amount)
+    /**
+     * @notice  Withdraw from non staked balance of user
+     * @dev     Can be withdrawn partially
+     * @param   _account  Address of liquidity holder to withdraw from
+     * @param   _amount  Amount of tokens to withdraw
+     * @return  uint256  Amount withdrawn
+     */
+    function withdrawNonStaked(address _account, uint256 _amount)
         public
         onlyJarAndAuthorised
         returns (uint256)
     {
-        return _withdraw(account, _amount);
+        return _withdraw(_account, _amount);
     }
 
+    /**
+     * @notice  Withdraw All balance of user staked and normally deposited
+     * @dev     Works only when stake is unlocked
+     * @param   _account  Address of liquidity holder to withdraw from
+     * @return  uint256  Amount withdrawn
+     */
     function withdrawUnlockedStake(address _account)
         public
         onlyJarAndAuthorised
@@ -496,6 +601,12 @@ contract VirtualGaugeV2 is
         return _withdraw(_account, 0);
     }
 
+    /**
+     * @notice  Withdraw All balance of user staked and normally deposited
+     * @dev     Works only when stake is unlocked
+     * @param   _account  Address of liquidity holder to withdraw from
+     * @return  uint256  Amount withdrawn
+     */
     function withdrawAll(address _account)
         public
         onlyJarAndAuthorised
@@ -508,6 +619,13 @@ contract VirtualGaugeV2 is
             ));
     }
 
+    /**
+     * @notice  Internal method to withdraw tokens
+     * @dev     In case of unlocked stake withdrawl _amount = 0
+     * @param   _account  Address of liquidity holder
+     * @param   _amount  Amount to be withdrawn
+     * @return  uint256  Amount withdrawn
+     */
     function _withdraw(address _account, uint256 _amount)
         internal
         nonReentrant
@@ -536,48 +654,59 @@ contract VirtualGaugeV2 is
                 "Cannot withdraw more than your non-staked balance"
             );
         }
+        emit Withdrawn(_account, _amount);
         return _amount;
     }
 
-    function getReward(address account)
+    /// @notice Claim accumulated reward
+    function getReward(address _account)
         public
         nonReentrant
-        updateReward(account, true)
+        updateReward(_account, true)
         onlyJarAndAuthorised
     {
         uint256 reward;
 
         for (uint256 i = 0; i < rewardTokens.length; i++) {
             if (rewardTokenDetails[rewardTokens[i]].isActive) {
-                reward = rewards[account][i];
+                reward = rewards[_account][i];
                 if (reward > 0) {
-                    rewards[account][i] = 0;
-                    IERC20(rewardTokens[i]).safeTransfer(account, reward);
-                    emit RewardPaid(account, reward);
+                    rewards[_account][i] = 0;
+                    IERC20(rewardTokens[i]).safeTransfer(_account, reward);
+                    emit RewardPaid(_account, reward);
                 }
             }
         }
     }
 
-    function getRewardByToken(address account, address _rewardToken)
+    /**
+     * @notice  Get reward accumulated in particular reward token
+     * @param   _account  Address of user
+     * @param   _rewardToken  Address of set reward token
+     */
+    function getRewardByToken(address _account, address _rewardToken)
         public
         nonReentrant
-        updateReward(account, true)
+        updateReward(_account, true)
         onlyJarAndAuthorised
     {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Token not available");
         uint256 reward;
         if (token.isActive) {
-            reward = rewards[account][token.index];
+            reward = rewards[_account][token.index];
             if (reward > 0) {
-                rewards[account][token.index] = 0;
-                IERC20(rewardTokens[token.index]).safeTransfer(account, reward);
-                emit RewardPaid(account, reward);
+                rewards[_account][token.index] = 0;
+                IERC20(rewardTokens[token.index]).safeTransfer(
+                    _account,
+                    reward
+                );
+                emit RewardPaid(_account, reward);
             }
         }
     }
 
+    /// @notice Exit from Gauge i.e. Withdraw complete liquidity and claim reward
     function exit(address account) external {
         withdrawAll(account);
         getReward(account);
@@ -585,12 +714,16 @@ contract VirtualGaugeV2 is
 
     /* ========== RESTRICTED FUNCTIONS ========== */
 
-    function notifyRewardAmount(
-        address _rewardToken,
-        uint256 _reward,
-        int256[] calldata _weights,
-        uint256 periodId
-    ) external onlyDistribution(_rewardToken) updateReward(address(0), false) {
+    /**
+     * @notice  Fetch reward to distribute
+     * @param   _rewardToken  Address of reward token
+     * @param   _reward  Amount to be fetched
+     */
+    function notifyRewardAmount(address _rewardToken, uint256 _reward)
+        external
+        onlyDistribution(_rewardToken)
+        updateReward(address(0), false)
+    {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
         require(
@@ -632,35 +765,15 @@ contract VirtualGaugeV2 is
             DURATION;
     }
 
-    function setMultipliers(uint256 _lock_max_multiplier) external onlyGov {
-        require(
-            _lock_max_multiplier >= uint256(1e18),
-            "Multiplier must be greater than or equal to 1e18"
-        );
-        lockMaxMultiplier = _lock_max_multiplier;
-        emit LockedStakeMaxMultiplierUpdated(lockMaxMultiplier);
-    }
-
-    function setMaxRewardsDuration(uint256 _lockTimeForMaxMultiplier)
-        external
-        onlyGov
-    {
-        require(
-            _lockTimeForMaxMultiplier >= 86400,
-            "Rewards duration too short"
-        );
-        // require(
-        //     periodFinish == 0 || block.timestamp > periodFinish,
-        //     "Reward period incomplete"
-        // );
-        lockTimeForMaxMultiplier = _lockTimeForMaxMultiplier;
-        emit MaxRewardsDurationUpdated(lockTimeForMaxMultiplier);
-    }
-
+    /// @notice Unlock stakes for all users
     function unlockStakes() external onlyGov {
         stakesUnlocked = !stakesUnlocked;
     }
 
+    /**
+     * @notice  Unlock stakes for a particular user
+     * @param   account  Address of user whose stake is to be uncloked
+     */
     function unlockStakeForAccount(address account) external onlyGov {
         stakesUnlockedForAccount[account] = !stakesUnlockedForAccount[account];
     }
@@ -668,8 +781,6 @@ contract VirtualGaugeV2 is
     /* ========== EVENTS ========== */
     event RewardAdded(uint256 reward);
     event Staked(address indexed user, uint256 amount, uint256 secs);
-    event Withdrawn(address indexed user, uint256 amount, uint256 index);
+    event Withdrawn(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
-    event LockedStakeMaxMultiplierUpdated(uint256 multiplier);
-    event MaxRewardsDurationUpdated(uint256 newDuration);
 }
