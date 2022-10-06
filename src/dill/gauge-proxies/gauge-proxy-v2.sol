@@ -8,7 +8,11 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 import "erc721a/contracts/ERC721A.sol";
 
 /* ========== INTERFACES ========== */
-interface iGaugeV2 {
+interface IGaugeV2 {
+    function notifyRewardAmount(address rewardToken, uint256 rewards) external;
+}
+
+interface IRootGaugeV2 {
     function notifyRewardAmount(
         address rewardToken,
         uint256 rewards,
@@ -321,8 +325,10 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
      * @param   _chainId  Blockchain ID
      * @param   _weight  Blockchain's weight to be set
      */
-    function setChainIdWeight(uint256 _chainId, uint256 _weight) external {
-        require(msg.sender == governance, "GaugeProxy: !gov");
+    function setChainIdWeight(uint256 _chainId, uint256 _weight)
+        external
+        onlyGov
+    {
         require(
             _chainId > 0 && _chainId <= _chainIdCounter,
             "GaugeProxy: invalid chain id"
@@ -479,8 +485,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         address _token,
         uint256 _chainId,
         address _gaugeAddress
-    ) external {
-        require(msg.sender == governance, "GaugeProxy: !gov");
+    ) external onlyGov {
         require(_chainId > 0, "GaugeProxy: invalid chain id");
 
         Gauge memory _gauge = gauges[_token];
@@ -508,8 +513,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         address _token,
         uint256 _chainId,
         address _gaugeAddress
-    ) external {
-        require(msg.sender == governance, "GaugeProxy: !gov");
+    ) external onlyGov {
         require(_chainId > 0, "GaugeProxy: invalid chain id");
         require(
             _gaugeAddress != address(0),
@@ -538,8 +542,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         string calldata _name,
         uint256 _weight,
         address _rootGaugeAddress
-    ) external {
-        require(msg.sender == governance, "GaugeProxy: !gov");
+    ) external onlyGov {
         uint256 currentId = getCurrentPeriodId();
         require(
             distributionId == currentId,
@@ -566,8 +569,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
      * @dev     A gauge can only be delisted when it has received -ve aggregate voting 5 times
      * @param   _token  Address of gauge token
      */
-    function delistGauge(address _token) external {
-        require(msg.sender == governance, "GaugeProxy: !gov");
+    function delistGauge(address _token) external onlyGov {
         require(
             gauges[_token].gaugeAddress != address(0x0),
             "GaugeProxy: !exists"
@@ -620,8 +622,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
      * @notice  Sets MasterChef PID
      * @param   _pid  PID to set on MasterChef
      */
-    function setPID(uint256 _pid) external {
-        require(msg.sender == governance, "GaugeProxy: !gauge gov");
+    function setPID(uint256 _pid) external onlyGov {
         require(pid == 0, "GaugeProxy: pid has already been set");
         require(_pid > 0, "GaugeProxy: invalid pid");
         pid = _pid;
@@ -633,13 +634,9 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
      * @param   _start  Starting index of gauges
      * @param   _end  Ending index of gauges
      */
-    function distribute(uint256 _start, uint256 _end) external {
+    function distribute(uint256 _start, uint256 _end) external onlyGov {
         require(_start < _end, "GaugeProxy: bad _start");
         require(_end <= _tokens.length, "GaugeProxy: bad _end");
-        require(
-            msg.sender == governance,
-            "GaugeProxy: only governance can distribute"
-        );
 
         uint256 currentId = getCurrentPeriodId();
         require(
@@ -698,12 +695,19 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
                     uint256 reward_ = uint256(_reward);
                     PICKLE.safeApprove(_gauge.gaugeAddress, 0);
                     PICKLE.safeApprove(_gauge.gaugeAddress, reward_);
-                    iGaugeV2(_gauge.gaugeAddress).notifyRewardAmount(
-                        address(TempPICKLE),
-                        reward_,
-                        _weights,
-                        periodToUse
-                    );
+                    if (_gauge.gaugeType == GaugeType.ROOT) {
+                        IRootGaugeV2(_gauge.gaugeAddress).notifyRewardAmount(
+                            address(PICKLE),
+                            reward_,
+                            _weights,
+                            periodToUse
+                        );
+                    } else {
+                        IGaugeV2(_gauge.gaugeAddress).notifyRewardAmount(
+                            address(PICKLE),
+                            reward_
+                        );
+                    }
                 }
 
                 if (_reward < 0) {
@@ -736,11 +740,7 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
      * @notice  add PickleNFT contract
      * @param   _contractAddress  NFT contract address
      */
-    function setNftContract(address _contractAddress) external {
-        require(
-            msg.sender == governance,
-            "GaugeProxy: This operation can only be performed by governance"
-        );
+    function setNftContract(address _contractAddress) external onlyGov {
         nftToken = IPickleNFT(_contractAddress);
     }
 
