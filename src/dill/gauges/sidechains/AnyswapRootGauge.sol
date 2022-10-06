@@ -35,21 +35,25 @@ interface IAnyToken {
 contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    /// @notice Token addresses
     IERC20 public constant PICKLE =
-        IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5); 
+        IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5);
 
-    // Constant for various precisions
+    /// @notice Constant for various precisions
     uint256 public constant DURATION = 7 days;
+
+    /// @notice Reward addresses
+    address[] public rewardTokens;
+
     uint256 public chainId;
     address public sidechainGaugeProxy;
-
-    //Reward addresses
-    address[] public rewardTokens;
 
     IAnycallClient public anycallClient;
     IAnyToken public anyToken;
 
-    // reward token details
+    /* ========== STRUCTS ========== */
+
+    /// @notice reward token details
     struct rewardTokenDetail {
         uint256 index;
         bool isActive;
@@ -59,6 +63,8 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         uint256 lastUpdateTime;
         uint256 periodFinish;
     }
+
+    /* ========== MAPPINGS ========== */
     mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
 
     /* ========== MODIFIERS ========== */
@@ -67,13 +73,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         require(
             msg.sender == rewardTokenDetails[_token].distributor,
             "Caller is not RewardsDistribution contract"
-        );
-        _;
-    }
-    modifier onlyGov() {
-        require(
-            msg.sender == governance,
-            "Operation allowed by only governance"
         );
         _;
     }
@@ -86,7 +85,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         uint256 _chainId,
         address _sidechainGaugeProxy
     ) {
-        // todo side chain id?
         anyToken = IAnyToken(_anyToken);
         anycallClient = IAnycallClient(_anycallClient);
         chainId = _chainId;
@@ -96,6 +94,10 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== VIEWS ========== */
 
+    /**
+     * @notice  Get on going rewards for all reward tokens set for a period
+     * @return  rewardsPerDurationArr  Array of rewards for all set reward tokens
+     */
     function getRewardForDuration()
         external
         view
@@ -113,6 +115,11 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         }
     }
 
+    /**
+     * @notice  Set new reward token
+     * @param   _rewardToken  Address of reward token
+     * @param   _distributionForToken  Address of distribution for '_rewardToken'
+     */
     function setRewardToken(address _rewardToken, address _distributionForToken)
         public
         onlyGov
@@ -129,6 +136,10 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokens.push(_rewardToken);
     }
 
+    /**
+     * @notice  Set reward token inactive
+     * @param   _rewardToken  Address of reward token
+     */
     function setRewardTokenInactive(address _rewardToken) public onlyGov {
         require(
             rewardTokenDetails[_rewardToken].isActive,
@@ -137,6 +148,11 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].isActive = false;
     }
 
+    /**
+     * @notice  Set distribution for already set reward token
+     * @param   _distributionForToken  Address which can distribute '_rewardToken'
+     * @param   _rewardToken  Address of reward token
+     */
     function setDisributionForToken(
         address _distributionForToken,
         address _rewardToken
@@ -153,11 +169,18 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
+    /**
+     * @notice  Fetch reward to distribute
+     * @param   _rewardToken  Address of reward token
+     * @param   _reward  Amount to be fetched
+     * @param   _weights  Array of weights for gauges
+     * @param   _periodId  Period Id for which rewards are being fetched for
+     */
     function notifyRewardAmount(
         address _rewardToken,
         uint256 _reward,
         int256[] calldata _weights,
-        uint256 periodId
+        uint256 _periodId
     ) external payable onlyDistribution(_rewardToken) {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
@@ -179,9 +202,9 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
             sidechainGaugeProxy,
             chainId,
             _weights,
-            periodId
+            _periodId
         );
-        require(fee <= msg.value, "insufficient fee");
+        require(fee <= msg.value, "Insufficient fee");
 
         PICKLE.safeApprove(address(anycallClient), 0);
         PICKLE.safeApprove(address(anycallClient), _reward);
@@ -192,10 +215,8 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
             sidechainGaugeProxy,
             chainId,
             _weights,
-            periodId
+            _periodId
         );
-
-        rewardTokenDetails[_rewardToken] = token;
     }
 
     receive() external payable {}
