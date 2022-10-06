@@ -145,7 +145,9 @@ contract VirtualGaugeV2 is
         address _governance,
         address _gaugeProxy
     ) {
-        require(_jar == address(0), "cannot set zero address");
+        require(_jar == address(0), "Cannot set token to zero address");
+        require(_governance == address(0), "Cannot set governance to zero address");
+        require(_gaugeProxy == address(0), "Cannot set gaugeProxy to zero address");
         jar = IJar(_jar);
         governance = _governance;
         gaugeProxy = IGaugeProxyV2(_gaugeProxy);
@@ -292,7 +294,7 @@ contract VirtualGaugeV2 is
      * @param   _jar  Address of Jar
      */
     function setJar(address _jar) external onlyGov {
-        require(_jar != address(0), "cannot set to zero");
+        require(_jar != address(0), "Cannot set to zero");
         require(_jar != address(jar), "Jar is already set");
         jar = IJar(_jar);
     }
@@ -309,7 +311,7 @@ contract VirtualGaugeV2 is
     {
         require(
             authorisedAddress[_account] != _value,
-            "address is already set to given value"
+            "Address is already set to given value"
         );
         authorisedAddress[_account] = _value;
     }
