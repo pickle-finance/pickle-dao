@@ -123,7 +123,14 @@ contract GaugeV2 is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== CONSTRUCTOR ========== */
 
-    constructor(address _token, address _governance) {
+    constructor(
+        address _token,
+        address _governance,
+        address _gaugeProxy
+    ) {
+        require(_token == address(0), "Cannot set token to zero address");
+        require(_governance == address(0), "Cannot set governance to zero address");
+        require(_gaugeProxy == address(0), "Cannot set gaugeProxy to zero address");
         TOKEN = IERC20(_token);
         governance = _governance;
     }
