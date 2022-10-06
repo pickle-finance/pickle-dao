@@ -2,8 +2,8 @@
 
 pragma solidity 0.8.9;
 
-import "../../safeguard/Ownable.sol";
-import "../../interfaces/ISigsVerifier.sol";
+import "../safeguard/Ownable.sol";
+import "../interfaces/ISigsVerifier.sol";
 
 contract MessageBusSender is Ownable {
     ISigsVerifier public immutable sigsVerifier;

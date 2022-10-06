@@ -4,12 +4,12 @@ pragma solidity 0.8.9;
 
 import "../libraries/MsgDataTypes.sol";
 import "../interfaces/IMessageReceiverApp.sol";
-import "../../interfaces/IBridge.sol";
-import "../../interfaces/IOriginalTokenVault.sol";
-import "../../interfaces/IOriginalTokenVaultV2.sol";
-import "../../interfaces/IPeggedTokenBridge.sol";
-import "../../interfaces/IPeggedTokenBridgeV2.sol";
-import "../../safeguard/Ownable.sol";
+import "../interfaces/IBridge.sol";
+import "../interfaces/IOriginalTokenVault.sol";
+import "../interfaces/IOriginalTokenVaultV2.sol";
+import "../interfaces/IPeggedTokenBridge.sol";
+import "../interfaces/IPeggedTokenBridgeV2.sol";
+import "../safeguard/Ownable.sol";
 
 contract MessageBusReceiver is Ownable {
     mapping(bytes32 => MsgDataTypes.TxStatus) public executedMessages;

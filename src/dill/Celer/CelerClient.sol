@@ -2,6 +2,7 @@
 pragma solidity ^0.8.6;
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./framework/MessageApp.sol";
 
 abstract contract AdminControl {
     address public admin;
@@ -34,57 +35,6 @@ abstract contract AdminControl {
     }
 }
 
-abstract contract PausableControl {
-    mapping(bytes32 => bool) private _pausedRoles;
-
-    bytes32 public constant PAUSE_ALL_ROLE = 0x00;
-
-    event Paused(bytes32 role);
-    event Unpaused(bytes32 role);
-
-    modifier whenNotPaused(bytes32 role) {
-        require(
-            !paused(role) && !paused(PAUSE_ALL_ROLE),
-            "PausableControl: paused"
-        );
-        _;
-    }
-
-    modifier whenPaused(bytes32 role) {
-        require(
-            paused(role) || paused(PAUSE_ALL_ROLE),
-            "PausableControl: not paused"
-        );
-        _;
-    }
-
-    function paused(bytes32 role) public view virtual returns (bool) {
-        return _pausedRoles[role];
-    }
-
-    function _pause(bytes32 role) internal virtual whenNotPaused(role) {
-        _pausedRoles[role] = true;
-        emit Paused(role);
-    }
-
-    function _unpause(bytes32 role) internal virtual whenPaused(role) {
-        _pausedRoles[role] = false;
-        emit Unpaused(role);
-    }
-}
-
-abstract contract PausableControlWithAdmin is PausableControl, AdminControl {
-    constructor(address _admin) AdminControl(_admin) {}
-
-    function pause(bytes32 role) external onlyAdmin {
-        _pause(role);
-    }
-
-    function unpause(bytes32 role) external onlyAdmin {
-        _unpause(role);
-    }
-}
-
 interface ICelerToken {
     function mint(address to, uint256 amount) external returns (bool);
 
@@ -101,12 +51,48 @@ interface ISidechainGaugeProxy {
     ) external;
 }
 
+contract CelerClient is MessageApp, AdminControl {
+    using SafeERC20 for IERC20;
+
+    address public distributor;
+    mapping(address => mapping(uint256 => address)) public tokenPeers;
+    mapping(uint256 => address) public clientPeers;
+
+    event LogSwapout(
+        address indexed token,
+        address indexed sender,
+        address indexed receiver,
+        uint256 amount,
+        uint256 toChainId,
+        int256[] weights
+    );
+    event LogSwapin(
+        address indexed token,
+        address indexed sender,
+        address indexed receiver,
+        uint256 amount,
+        uint256 fromChainId,
+        int256[] weights
+    );
+
+    event LogSwapoutFail(
+        address indexed token,
+        address indexed sender,
+        address indexed receiver,
+        uint256 amount,
+        uint256 toChainId,
+        int256[] weights
+    );
+
+    constructor(address _messageBus)
+        MessageApp(_messageBus)
+        AdminControl(msg.sender)
+    {}
+
     modifier onlyDistributor() {
         require(msg.sender == distributor, "CelerCLient: onlyDistributor");
         _;
     }
-
-    constructor(address _messageBus) MessageApp(_messageBus) {}
 
     function setTokenPeers(
         address srcToken,
@@ -119,20 +105,29 @@ interface ISidechainGaugeProxy {
         }
     }
 
+    function setClientPeers(
+        uint256[] calldata _chainIds,
+        address[] calldata _peers
+    ) external onlyAdmin {
+        require(_chainIds.length == _peers.length);
+        for (uint256 i = 0; i < _chainIds.length; i++) {
+            clientPeers[_chainIds[i]] = _peers[i];
+        }
+    }
+
     function setDistributor(address _distributor) external onlyAdmin {
         require(_distributor != address(0));
         distributor = _distributor;
     }
 
     /// @dev Call by the user to submit a request for a cross chain interaction
-    function sendTokenWithNote(
+    function bridge(
         address token,
         uint256 amount,
         address receiver,
         uint256 toChainId,
         int256[] memory weights,
         uint256 periodId,
-        bytes calldata _note,
         MsgDataTypes.BridgeSendType _bridgeSendType
     ) external payable {
         address clientPeer = clientPeers[toChainId];
@@ -158,7 +153,7 @@ interface ISidechainGaugeProxy {
             // update amount to real balance increasement (some token may deduct fees)
             amount = new_balance > old_balance ? new_balance - old_balance : 0;
         } else {
-            assert(IAnyswapToken(token).burn(msg.sender, amount));
+            assert(ICelerToken(token).burn(msg.sender, amount));
         }
 
         bytes memory data = abi.encode(
@@ -175,9 +170,10 @@ interface ISidechainGaugeProxy {
             receiver,
             token,
             amount,
-            toChainId,
-            _nonce, //--->
-            _maxSlippage, //--->
+            uint64(toChainId),
+            0,
+            0, //_nonce, //--->
+            //_maxSlippage, //--->
             data,
             _bridgeSendType,
             msg.value
@@ -193,15 +189,32 @@ interface ISidechainGaugeProxy {
                 require(success);
             }
         }
+
+        emit LogSwapout(
+            token,
+            msg.sender,
+            receiver,
+            amount,
+            toChainId,
+            weights
+        );
     }
 
-    /// @notice Call by `AnycallProxy` to execute a cross chain interaction on the destination chain
+    /**
+     * @notice Called by MessageBus to execute a message with an associated token transfer.
+     * The contract is guaranteed to have received the right amount of tokens before this function is called.
+     * @param _token The address of the token that comes out of the bridge
+     * @param _amount The amount of tokens received at this contract through the cross-chain bridge.
+     * @param _srcChainId The source chain ID where the transfer is originated from
+     * @param _data Arbitrary message bytes originated from and encoded by the source app contract
+     */
+
     function executeMessageWithTransfer(
-        address, // srcContract
+        address srcContract,
         address _token,
         uint256 _amount,
         uint64 _srcChainId,
-        bytes memory _message,
+        bytes calldata _data,
         address // executor
     ) external payable override onlyMessageBus returns (ExecutionStatus) {
         (
@@ -214,7 +227,7 @@ interface ISidechainGaugeProxy {
             int256[] memory weights,
             uint256 periodId
         ) = abi.decode(
-                data[4:],
+                _data,
                 (
                     address,
                     address,
@@ -230,11 +243,11 @@ interface ISidechainGaugeProxy {
         //(address from, uint256 fromChainId, ) = IAnycallExecutor(executor)
         //    .context();
         require(
-            clientPeers[fromChainId] == from,
+            clientPeers[_srcChainId] == srcContract,
             "CelerCLient: wrong context"
         );
         require(
-            tokenPeers[dstToken][fromChainId] == srcToken,
+            tokenPeers[dstToken][_srcChainId] == srcToken,
             "CelerCLient: mismatch source token"
         );
 
@@ -244,44 +257,67 @@ interface ISidechainGaugeProxy {
             _underlying != address(0) &&
             (IERC20(_underlying).balanceOf(dstToken) >= amount)
         ) {
-            IAnyswapToken(dstToken).mint(address(this), amount);
-            IAnyswapToken(dstToken).withdraw(amount, receiver);
+            ICelerToken(dstToken).mint(address(this), amount);
+            ICelerToken(dstToken).withdraw(amount, receiver);
         } else {
-            assert(IAnyswapToken(dstToken).mint(receiver, amount));
+            assert(ICelerToken(dstToken).mint(receiver, amount));
         }
 
-        // IERC20(dstToken).safeApprove(receiver, amount);
         ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
-        emit MessageWithTransferReceived(
-            sender,
-            _token,
-            _amount,
-            _srcChainId,
-            note
-        );
+
+        emit LogSwapin(dstToken, sender, receiver, amount, 0, weights);
+
         return ExecutionStatus.Success;
     }
-function executeMessageWithTransferFallback(MsgDataTypes.TransferInfo calldata _transfer, bytes calldata _message)
-        private
-        returns (IMessageReceiverApp.ExecutionStatus)
-    {
-        uint256 gasLeftBeforeExecution = gasleft();
-        (bool ok, bytes memory res) = address(_transfer.receiver).call{value: msg.value}(
-            abi.encodeWithSelector(
-                IMessageReceiverApp.executeMessageWithTransferFallback.selector,
-                _transfer.sender,
-                _transfer.token,
-                _transfer.amount,
-                _transfer.srcChainId,
-                _message,
-                msg.sender
-            )
+
+    function executeMessageWithTransferFallback(
+        address _sender,
+        address, // _token
+        uint256, // _amount
+        uint64 ,//_srcChainId,
+        bytes calldata _data,
+        address // executor
+    ) external payable override onlyMessageBus returns (ExecutionStatus) {
+        (
+            address srcToken,
+            address dstToken,
+            uint256 amount,
+            address sender,
+            address receiver,
+            uint256 toChainId,
+            int256[] memory weights
+        ) = abi.decode(
+                _data,
+                (
+                    address,
+                    address,
+                    uint256,
+                    address,
+                    address,
+                    uint256,
+                    int256[]
+                )
+            );
+
+        require(
+            clientPeers[toChainId] == receiver,
+            "AnycallClient: mismatch dest client"
         );
-        if (ok) {
-            return abi.decode((res), (IMessageReceiverApp.ExecutionStatus));
-        }
-        handleExecutionRevert(gasLeftBeforeExecution, res);
-        return IMessageReceiverApp.ExecutionStatus.Fail;
+        require(
+            tokenPeers[srcToken][toChainId] == dstToken,
+            "AnycallClient: mismatch dest token"
+        );
+
+        emit LogSwapoutFail(
+            srcToken,
+            _sender,
+            receiver,
+            amount,
+            toChainId,
+            weights
+        );
+
+        return ExecutionStatus.Fail;
     }
 
     function calcFees(
@@ -306,8 +342,8 @@ function executeMessageWithTransferFallback(MsgDataTypes.TransferInfo calldata _
             periodId
         );
 
-        return
-            calcFee(data);
+        return calcFee(data);
+        //0;
     }
 
     function _getUnderlying(address token) internal returns (address) {
@@ -320,14 +356,4 @@ function executeMessageWithTransferFallback(MsgDataTypes.TransferInfo calldata _
         }
         return address(0);
     }
-
-    function testWoring(uint256 flag) external returns (uint256 f) {
-        f = flag;
-    }
 }
-
-
-
-
-
-
