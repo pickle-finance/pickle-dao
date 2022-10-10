@@ -76,8 +76,6 @@ contract VirtualGaugeV2 is
             _balance
         );
 
-        uint256 lockBoostedDerivedBal = 0;
-
         LockedStake memory thisStake = _lockedStakes[_account];
         uint256 lock_multiplier = thisStake.lock_multiplier;
         uint256 lastRewardClaimTime = _lastRewardClaimTime[_account];
@@ -117,9 +115,8 @@ contract VirtualGaugeV2 is
             }
         }
         uint256 liquidity = thisStake.liquidity;
-        uint256 combined_boosted_amount = (liquidity * lock_multiplier) /
+        uint256 lockBoostedDerivedBal = (liquidity * lock_multiplier) /
             _MultiplierPrecision;
-        lockBoostedDerivedBal = lockBoostedDerivedBal + combined_boosted_amount;
 
         uint256 nftBoostedDerivedBalance = 0;
         if (gaugeProxy.isStaked(_account) && gaugeProxy.isBoostable(_account)) {
