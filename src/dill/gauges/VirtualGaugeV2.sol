@@ -1,104 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.1;
 
-import "../ProtocolGovernance.sol";
 import "../VirtualBalanceWrapper.sol";
+import "./BaseGaugeV2.sol";
 import "../IJar.sol";
-import "@openzeppelin/contracts/interfaces/IERC20.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract VirtualGaugeV2 is
-    ProtocolGovernance,
-    ReentrancyGuard,
+   BaseGaugeV2,
     VirtualBalanceWrapper
 {
     using SafeERC20 for IERC20;
 
-    /// @notice Token addresses
-    IERC20 public constant DILL =
-        IERC20(0xbBCf169eE191A1Ba7371F30A1C344bFC498b29Cf);
-
-    /// @notice Constant for various precisions
-    uint256 private constant _MultiplierPrecision = 1e18;
-    uint256 public constant DURATION = 7 days;
-    uint256 public multiplierDecayPerSecond = uint256(48e9);
-
-    /// @notice Lock time and multiplier
-    uint256 public lockMaxMultiplier = uint256(25e17); // E18. 1x = e18
-    uint256 public lockTimeForMaxMultiplier = 365 * 86400; // 1 year
-    uint256 public lockTimeMin = 86400; // 1 day
-
-    /// @notice Reward addresses
-    address[] public rewardTokens;
-
-    /// @notice Balance tracking
-    uint256 public derivedSupply;
-
-    /// @notice Release locked stakes in case of emergency; Administrative booleans
-    bool public stakesUnlocked;
-    /* ========== STRUCTS & ENUM ========== */
-    enum GaugeType {
-        REGULAR,
-        VIRTUAL,
-        ROOT
-    }
-    /// @notice reward token details
-    struct rewardTokenDetail {
-        uint256 index;
-        bool isActive;
-        address distributor;
-        uint256 rewardRate;
-        uint256 rewardPerTokenStored;
-        uint256 lastUpdateTime;
-        uint256 periodFinish;
-    }
-
-    /// @notice Locked stake details
-    struct LockedStake {
-        uint256 startTimestamp;
-        uint256 liquidity;
-        uint256 endingTimestamp;
-        uint256 lock_multiplier;
-        bool isPermanentlyLocked;
-    }
-
     /* ========== MAPPINGS ========== */
-    mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
-    mapping(address => mapping(uint256 => uint256))
-        private _userRewardPerTokenPaid;
-    mapping(address => mapping(uint256 => uint256)) public rewards;
     mapping(address => bool) public authorisedAddress;
-    mapping(address => uint256) private _lastUsedMultiplier;
-    mapping(address => uint256) private _lastRewardClaimTime; // staker addr -> timestamp
-    mapping(address => uint256) public derivedBalances;
-    mapping(address => uint256) private _base;
-    mapping(address => LockedStake) private _lockedStakes; // Stake tracking
-    mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
-
-    /// @notice Instance of gaugeProxy
-    IGaugeProxyV2 public gaugeProxy;
 
     /* ========== MODIFIERS ========== */
-
-    modifier onlyDistribution(address _token) {
-        require(
-            msg.sender == rewardTokenDetails[_token].distributor,
-            "Caller is not RewardsDistribution contract"
-        );
-        _;
-    }
-
-    modifier lockable(uint256 secs) {
-        require(secs >= lockTimeMin, "Minimum stake time not met");
-        require(
-            secs <= lockTimeForMaxMultiplier,
-            "Trying to lock for too long"
-        );
-        _;
-    }
-
     modifier updateReward(address account, bool isClaimReward) {
         rewardPerToken();
         lastTimeRewardApplicable();
@@ -142,222 +58,6 @@ contract VirtualGaugeV2 is
         require(_gaugeProxy == address(0), "Cannot set gaugeProxy to zero address");
         jar = IJar(_jar);
         governance = _governance;
-    }
-
-    /* ========== VIEWS ========== */
-
-    /**
-     * @notice  Get on going rewards for all reward tokens set for a period
-     * @return  rewardsPerDurationArr  Array of rewards for all set reward tokens
-     */
-    function getRewardForDuration()
-        external
-        view
-        returns (uint256[] memory rewardsPerDurationArr)
-    {
-        rewardsPerDurationArr = new uint256[](rewardTokens.length);
-
-        for (uint256 i = 0; i < rewardTokens.length; i++) {
-            rewardTokenDetail memory token = rewardTokenDetails[
-                rewardTokens[i]
-            ];
-            if (token.isActive) {
-                rewardsPerDurationArr[i] = token.rewardRate * DURATION;
-            }
-        }
-    }
-
-    /**
-     * @notice  Get multiplier, given the length of the lock
-     * @param   _secs  Length of the lock
-     * @return  uint256  Lock multiplier
-     */
-    function lockMultiplier(uint256 _secs) public view returns (uint256) {
-        uint256 lock_multiplier = uint256(_MultiplierPrecision) +
-            ((_secs * (lockMaxMultiplier - _MultiplierPrecision)) /
-                (lockTimeForMaxMultiplier));
-        if (lock_multiplier > lockMaxMultiplier)
-            lock_multiplier = lockMaxMultiplier;
-        return lock_multiplier;
-    }
-
-    /**
-     * @notice  Get decayed multiplier, given time elapesed since lock start time
-     * @param   _account  Address of user, for whose stake decayed multiplier is being calculated
-     * @param   _elapsedSeconds  Time elapesed since lock start time
-     * @return  uint256  Average decayed lock multiplier
-     */
-    function _averageDecayedLockMultiplier(
-        address _account,
-        uint256 _elapsedSeconds
-    ) internal view returns (uint256) {
-        return
-            (2 *
-                _lastUsedMultiplier[_account] -
-                (_elapsedSeconds - 1) *
-                multiplierDecayPerSecond) / 2;
-    }
-
-    /**
-     * @notice  Get locked stakes for a given account
-     * @param   _account  Adress of user whose stakes are to be fetched
-     * @return  LockedStake  stakes of 'account'
-     */
-    function lockedStakesOf(address _account)
-        external
-        view
-        returns (LockedStake memory)
-    {
-        return _lockedStakes[_account];
-    }
-
-    /// @notice Calaculate lastUpdateTime for all reward tokens set
-    function lastTimeRewardApplicable() public {
-        for (uint256 i = 0; i < rewardTokens.length; i++) {
-            rewardTokenDetail memory token = rewardTokenDetails[
-                rewardTokens[i]
-            ];
-            if (token.isActive) {
-                rewardTokenDetails[rewardTokens[i]].lastUpdateTime = Math.min(
-                    block.timestamp,
-                    token.periodFinish
-                );
-            }
-        }
-    }
-
-    /**
-     * @notice  Get rewards earned by account
-     * @param   _account  Address of user whose rewards are to be fetched
-     * @return  _newEarned  Array of rewards eraned by user for all reward tokens
-     */
-    function earned(address _account)
-        public
-        returns (uint256[] memory _newEarned)
-    {
-        rewardPerToken();
-        _newEarned = new uint256[](rewardTokens.length);
-
-        if (derivedBalances[_account] == 0) {
-            for (uint256 i = 0; i < rewardTokens.length; i++) {
-                _newEarned[i] = 0;
-            }
-        } else {
-            for (uint256 i = 0; i < rewardTokens.length; i++) {
-                rewardTokenDetail memory token = rewardTokenDetails[
-                    rewardTokens[i]
-                ];
-                if (token.isActive) {
-                    _newEarned[i] =
-                        ((derivedBalances[_account] *
-                            (token.rewardPerTokenStored -
-                                _userRewardPerTokenPaid[_account][i])) /
-                            _MultiplierPrecision) +
-                        rewards[_account][i];
-                }
-            }
-        }
-    }
-
-    /// @notice Calculate reward per token for all reward tokens set
-    function rewardPerToken() public {
-        if (totalSupply() != 0) {
-            for (uint256 i = 0; i < rewardTokens.length; i++) {
-                rewardTokenDetail memory token = rewardTokenDetails[
-                    rewardTokens[i]
-                ];
-                if (token.isActive) {
-                    lastTimeRewardApplicable();
-                    rewardTokenDetails[rewardTokens[i]].rewardPerTokenStored =
-                        token.rewardPerTokenStored +
-                        (((rewardTokenDetails[rewardTokens[i]].lastUpdateTime -
-                            token.lastUpdateTime) *
-                            token.rewardRate *
-                            _MultiplierPrecision) / derivedSupply);
-                }
-            }
-        }
-    }
-
-    /**
-     * @notice  Set jar
-     * @dev     Works only when Jar is not set
-     * @param   _jar  Address of Jar
-     */
-    function setJar(address _jar) external onlyGov {
-        require(_jar != address(0), "Cannot set to zero");
-        require(_jar != address(jar), "Jar is already set");
-        jar = IJar(_jar);
-    }
-
-    /**
-     * @notice  Set or revoke authorised address
-     * @dev     There can be multiple authorised addresses
-     * @param   _account  Address to be authorised
-     * @param   _value  Whether to set or revoke address authorisation
-     */
-    function setAuthoriseAddress(address _account, bool _value)
-        external
-        onlyGov
-    {
-        require(
-            authorisedAddress[_account] != _value,
-            "Address is already set to given value"
-        );
-        authorisedAddress[_account] = _value;
-    }
-
-    /**
-     * @notice  Set new reward token
-     * @param   _rewardToken  Address of reward token
-     * @param   _distributionForToken  Address of distribution for '_rewardToken'
-     */
-    function setRewardToken(address _rewardToken, address _distributionForToken)
-        public
-        onlyGov
-    {
-        rewardTokenDetail memory token;
-        token.isActive = true;
-        token.index = rewardTokens.length;
-        token.distributor = _distributionForToken;
-        token.rewardRate = 0;
-        token.rewardPerTokenStored = 0;
-        token.periodFinish = 0;
-        rewardTokenDetails[_rewardToken] = token;
-        rewardTokens.push(_rewardToken);
-    }
-
-    /**
-     * @notice  Set reward token inactive
-     * @param   _rewardToken  Address of reward token
-     */
-    function setRewardTokenInactive(address _rewardToken) public onlyGov {
-        require(
-            rewardTokenDetails[_rewardToken].isActive,
-            "Reward token not available"
-        );
-        rewardTokenDetails[_rewardToken].isActive = false;
-    }
-
-    /**
-     * @notice  Set distribution for already set reward token
-     * @param   _distributionForToken  Address which can distribute '_rewardToken'
-     * @param   _rewardToken  Address of reward token
-     */
-    function setDisributionForToken(
-        address _distributionForToken,
-        address _rewardToken
-    ) public onlyGov {
-        require(
-            rewardTokenDetails[_rewardToken].isActive,
-            "Reward token not available"
-        );
-        require(
-            rewardTokenDetails[_rewardToken].distributor !=
-                _distributionForToken,
-            "Given address is already distributor for given reward token"
-        );
-        rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
     /**
@@ -437,7 +137,59 @@ contract VirtualGaugeV2 is
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */
+    /// @notice Calculate reward per token for all reward tokens set
+    function rewardPerToken() public {
+        if (totalSupply() != 0) {
+            for (uint256 i = 0; i < rewardTokens.length; i++) {
+                rewardTokenDetail memory token = rewardTokenDetails[
+                    rewardTokens[i]
+                ];
+                if (token.isActive) {
+                    lastTimeRewardApplicable();
+                    rewardTokenDetails[rewardTokens[i]].rewardPerTokenStored =
+                        token.rewardPerTokenStored +
+                        (((rewardTokenDetails[rewardTokens[i]].lastUpdateTime -
+                            token.lastUpdateTime) *
+                            token.rewardRate *
+                            _MultiplierPrecision) / derivedSupply);
+                }
+            }
+        }
+    }
 
+    /**
+     * @notice  Get rewards earned by account
+     * @param   _account  Address of user whose rewards are to be fetched
+     * @return  _newEarned  Array of rewards eraned by user for all reward tokens
+     */
+    function earned(address _account)
+        public
+        returns (uint256[] memory _newEarned)
+    {
+        rewardPerToken();
+        _newEarned = new uint256[](rewardTokens.length);
+
+        if (derivedBalances[_account] == 0) {
+            for (uint256 i = 0; i < rewardTokens.length; i++) {
+                _newEarned[i] = 0;
+            }
+        } else {
+            for (uint256 i = 0; i < rewardTokens.length; i++) {
+                rewardTokenDetail memory token = rewardTokenDetails[
+                    rewardTokens[i]
+                ];
+                if (token.isActive) {
+                    _newEarned[i] =
+                        ((derivedBalances[_account] *
+                            (token.rewardPerTokenStored -
+                                _userRewardPerTokenPaid[_account][i])) /
+                            _MultiplierPrecision) +
+                        rewards[_account][i];
+                }
+            }
+        }
+    }
+    
     /**
      * @notice  Calculate and update derived balance for '_account' and derived supply
      * @param   _account  Address of user
@@ -731,11 +483,11 @@ contract VirtualGaugeV2 is
         );
 
         if (block.timestamp >= token.periodFinish) {
-            rewardTokenDetails[_rewardToken].rewardRate = _reward / DURATION;
+            token.rewardRate = _reward / DURATION;
         } else {
             uint256 remaining = token.periodFinish - block.timestamp;
             uint256 leftover = remaining * token.rewardRate;
-            rewardTokenDetails[_rewardToken].rewardRate =
+            token.rewardRate =
                 (_reward + leftover) /
                 DURATION;
         }
@@ -752,28 +504,12 @@ contract VirtualGaugeV2 is
 
         emit RewardAdded(_reward);
 
-        rewardTokenDetails[_rewardToken].lastUpdateTime = block.timestamp;
-        rewardTokenDetails[_rewardToken].periodFinish =
-            block.timestamp +
-            DURATION;
-    }
-
-    /// @notice Unlock stakes for all users
-    function unlockStakes() external onlyGov {
-        stakesUnlocked = !stakesUnlocked;
-    }
-
-    /**
-     * @notice  Unlock stakes for a particular user
-     * @param   account  Address of user whose stake is to be uncloked
-     */
-    function unlockStakeForAccount(address account) external onlyGov {
-        stakesUnlockedForAccount[account] = !stakesUnlockedForAccount[account];
+        token.lastUpdateTime = block.timestamp;
+        token.periodFinish = block.timestamp + DURATION;
+        rewardTokenDetails[_rewardToken] = token;
     }
 
     /* ========== EVENTS ========== */
-    event RewardAdded(uint256 reward);
-    event Staked(address indexed user, uint256 amount, uint256 secs);
     event Withdrawn(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
 }
