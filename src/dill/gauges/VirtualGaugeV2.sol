@@ -76,7 +76,7 @@ contract VirtualGaugeV2 is
         );
 
         LockedStake memory thisStake = _lockedStakes[_account];
-        uint256 lock_multiplier = thisStake.lock_multiplier;
+        uint256 lockMultiplier = thisStake.lockMultiplier;
         uint256 lastRewardClaimTime = _lastRewardClaimTime[_account];
         // If the lock is expired
         if (
@@ -90,21 +90,23 @@ contract VirtualGaugeV2 is
                 uint256 timeAfterExpiry = block.timestamp -
                     thisStake.endingTimestamp;
 
-                // Get the weighted-average lock_multiplier
-                uint256 numerator = (lock_multiplier * timeBeforeExpiry) +
-                    (_MultiplierPrecision * timeAfterExpiry);
-                lock_multiplier =
+                // Get the weighted-average lockMultiplier
+                uint256 numerator = ( _averageDecayedLockMultiplier(_account, timeBeforeExpiry) * 
+                    timeBeforeExpiry) + (_MultiplierPrecision * timeAfterExpiry);
+                // uint256 numerator = (lockMultiplier * timeBeforeExpiry) +
+                //     (_MultiplierPrecision * timeAfterExpiry);
+                lockMultiplier =
                     numerator /
                     (timeBeforeExpiry + timeAfterExpiry);
             }
             // Otherwise, it needs to just be 1x
             else {
-                lock_multiplier = _MultiplierPrecision;
+                lockMultiplier = _MultiplierPrecision;
             }
         } else {
             uint256 elapsedSeconds = block.timestamp - lastRewardClaimTime;
             if (elapsedSeconds > 0) {
-                lock_multiplier = thisStake.isPermanentlyLocked
+                lockMultiplier = thisStake.isPermanentlyLocked
                     ? lockMaxMultiplier
                     : _averageDecayedLockMultiplier(_account, elapsedSeconds);
                 _lastUsedMultiplier[_account] =
@@ -114,7 +116,7 @@ contract VirtualGaugeV2 is
             }
         }
         uint256 liquidity = thisStake.liquidity;
-        uint256 lockBoostedDerivedBal = (liquidity * lock_multiplier) /
+        uint256 lockBoostedDerivedBal = (liquidity * lockMultiplier) /
             _MultiplierPrecision;
 
         uint256 nftBoostedDerivedBalance = 0;
@@ -297,7 +299,7 @@ contract VirtualGaugeV2 is
         ) {
             uint256 MaxMultiplier = lockMultiplier(_secs);
             _lockedStake.endingTimestamp = _lockedStake.startTimestamp + _secs;
-            _lockedStake.lock_multiplier = MaxMultiplier;
+            _lockedStake.lockMultiplier = MaxMultiplier;
             _lastUsedMultiplier[_account] = MaxMultiplier;
         }
 

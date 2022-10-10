@@ -47,7 +47,7 @@ abstract contract BaseGaugeV2 is ProtocolGovernance, ReentrancyGuard {
         uint256 startTimestamp;
         uint256 liquidity;
         uint256 endingTimestamp;
-        uint256 lock_multiplier;
+        uint256 lockMultiplier;
         bool isPermanentlyLocked;
     }
 
@@ -74,7 +74,7 @@ abstract contract BaseGaugeV2 is ProtocolGovernance, ReentrancyGuard {
     mapping(address => bool) public stakesUnlockedForAccount; // Release locked stakes of an account in case of emergency
     mapping(address => LockedStake) internal _lockedStakes; // Stake tracking
 
-        /// @notice Instance of gaugeProxy
+    /// @notice Instance of gaugeProxy
     IGaugeProxyV2 public gaugeProxy;
 
     /* ========== MODIFIERS ========== */
@@ -155,12 +155,12 @@ abstract contract BaseGaugeV2 is ProtocolGovernance, ReentrancyGuard {
      * @return  uint256  Lock multiplier
      */
     function lockMultiplier(uint256 _secs) public view returns (uint256) {
-        uint256 lock_multiplier = uint256(_MultiplierPrecision) +
+        uint256 lockMultiplier = uint256(_MultiplierPrecision) +
             ((_secs * (lockMaxMultiplier - _MultiplierPrecision)) /
                 (lockTimeForMaxMultiplier));
-        if (lock_multiplier > lockMaxMultiplier)
-            lock_multiplier = lockMaxMultiplier;
-        return lock_multiplier;
+        if (lockMultiplier > lockMaxMultiplier)
+            lockMultiplier = lockMaxMultiplier;
+        return lockMultiplier;
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */
