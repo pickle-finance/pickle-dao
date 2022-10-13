@@ -76,14 +76,6 @@ contract TestSideChainGauge is ProtocolGovernance, ReentrancyGuard {
         _;
     }
 
-    modifier onlyGov() {
-        require(
-            msg.sender == governance,
-            "Operation allowed by only governance"
-        );
-        _;
-    }
-
     modifier lockable(uint256 secs) {
         require(secs >= lockTimeMin, "Minimum stake time not met");
         require(
