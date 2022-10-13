@@ -6,6 +6,8 @@ import "../ProtocolGovernance.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/utils/SafeERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "../../nft/IPickleNFT.sol";
+import "../../nft/ERC721A.sol";
 
 interface iGaugeV2 {
     function notifyRewardAmount(
@@ -152,7 +154,11 @@ contract MasterDill {
     }
 }
 
-contract GaugeProxyV2 is ProtocolGovernance, Initializable {
+contract GaugeProxyV2 is
+    ProtocolGovernance,
+    Initializable,
+    ERC721A__IERC721Receiver
+{
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
     MasterChef public constant MASTER =
@@ -221,6 +227,16 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
     }
     mapping(address => address[]) public delegatedAddresses;
     mapping(address => delegateData) public delegations;
+
+    //store nft token instance
+    IPickleNFT public nftToken;
+    struct LockedStake {
+        uint256 tokenId;
+        uint256 starting_period;
+        uint256 ending_period;
+    }
+    //mapping of user address to stake details
+    mapping(address => LockedStake) public _lockedStake;
 
     function getCurrentPeriodId() public view returns (uint256) {
         return
@@ -693,6 +709,89 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         }
     }
 
+    //Erc721a receiver
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external override returns (bytes4) {}
+
+    // add Picklenft contract
+    function setNftToken(address _tokenAddress) external {
+        require(
+            msg.sender == governance,
+            "gauge-proxy-v2.sol : This operation can only perdorm by governance"
+        );
+        nftToken = IPickleNFT(_tokenAddress);
+    }
+
+    // deposit and lock assets in the contract
+    function depositAndLock(uint256 tokenId, uint256 periods) external {
+        require(tokenId >= 0, "gauge-proxy-v2 : token id Can't be negative");
+        require(
+            periods > 0,
+            "gauge-proxy-v2: staking duration should greater then cliffDuration"
+        );
+
+        _deposit(tokenId, msg.sender, periods, getCurrentPeriodId());
+    }
+
+    function _deposit(
+        uint256 tokenId,
+        address account,
+        uint256 periods,
+        uint256 currentPeriod
+    ) internal {
+        //Only staked when user didn't have any staked nft
+        require(
+            _lockedStake[account].ending_period != 0,
+            "gauge-proxy-v2 : User already stacked a nft"
+        );
+        _lockedStake[account] = LockedStake(
+            tokenId,
+            currentPeriod + 1,
+            currentPeriod + periods
+        );
+        nftToken.safeTransferFrom(account, address(this), tokenId);
+        emit StakedNft(account, tokenId, currentPeriod + periods);
+    }
+
+    function withdraw(uint256 tokenId) external {
+        //Checking if stacked or not
+        require(
+            _lockedStake[msg.sender].ending_period == 0,
+            "gauge-proxy-v2 : User don't have stacked a nft"
+        );
+        //checking lock status
+        require(
+            _lockedStake[msg.sender].ending_period > getCurrentPeriodId(),
+            "guage-proxy-v2 : Can't withdraw before locked staked"
+        );
+        //safe transfer to user
+        nftToken.safeTransferFrom(address(this), msg.sender, tokenId);
+        //free space
+        delete _lockedStake[msg.sender];
+        emit Withdraw(msg.sender, tokenId);
+    }
+
+    //call to nft contract for getting token level
+    function getTokenLevel(address account) external view returns (uint256) {
+        uint256 tokenId = _lockedStake[account].tokenId;
+        return nftToken.getTokenLevel(tokenId);
+    }
+
+    //checking staked or not
+    function isStaked(address account) external view returns (bool) {
+        return _lockedStake[account].ending_period > 0;
+    }
+
+    //Checking current period is not equal to staked period and the ending period is nnot expired
+    function isBoostable(address account) external view returns (bool) {
+        return (_lockedStake[account].ending_period >= getCurrentPeriodId() &&
+            getCurrentPeriodId() > _lockedStake[account].starting_period - 1);
+    }
+
     event NewGaugeType(
         uint256 gaugeTypeId,
         address indexed rootGauge,
@@ -700,4 +799,6 @@ contract GaugeProxyV2 is ProtocolGovernance, Initializable {
         uint256 weight
     );
     event GaugeTypeWeightUpdated(uint256 indexed gaugeTypeId, uint256 weight);
+    event StakedNft(address account, uint256 tokenId, uint256 endPeriod);
+    event Withdraw(address account, uint256 tokenId);
 }
