@@ -41,6 +41,8 @@ interface ICelerToken {
     function burn(address from, uint256 amount) external returns (bool);
 
     function withdraw(uint256 amount, address to) external returns (uint256);
+
+    function underlying() external returns (address);
 }
 
 interface ISidechainGaugeProxy {
@@ -66,13 +68,11 @@ contract CelerClient is MessageApp, AdminControl {
         uint256 toChainId,
         int256[] weights
     );
-    event LogSwapin(
-        address indexed token,
-        address indexed sender,
-        address indexed receiver,
-        uint256 amount,
-        uint256 fromChainId,
-        int256[] weights
+     event MessageReceived(
+        address srcContract,
+        uint64 srcChainId,
+        address sender,
+        bytes message
     );
 
     event LogSwapoutFail(
@@ -120,15 +120,27 @@ contract CelerClient is MessageApp, AdminControl {
         distributor = _distributor;
     }
 
-    /// @dev Call by the user to submit a request for a cross chain interaction
+    function mintCelerToken(address token) external {
+        ICelerToken(token).mint(address(this), 100000);
+    }
+
+    /**
+    @dev Call by the user to submit a request for a cross chain interaction
+    @param token : address of celer token 
+    @param amount : amount to be bridge 
+    @param receiver : receiver of the token on destination chain
+    @param toChainId : chain id of destination chain
+    @param weights : weigths of the the guages
+    @param periodId : current period id
+     */
+
     function bridge(
         address token,
         uint256 amount,
         address receiver,
         uint256 toChainId,
         int256[] memory weights,
-        uint256 periodId,
-        MsgDataTypes.BridgeSendType _bridgeSendType
+        uint256 periodId
     ) external payable {
         address clientPeer = clientPeers[toChainId];
         require(clientPeer != address(0), "CelerCLient: no dest client");
@@ -141,7 +153,8 @@ contract CelerClient is MessageApp, AdminControl {
             oldCoinBalance = address(this).balance - msg.value;
         }
 
-        address _underlying = _getUnderlying(token);
+        address _underlying = ICelerToken(token).underlying();
+
         if (
             _underlying != address(0) &&
             IERC20(token).balanceOf(msg.sender) < amount
@@ -149,7 +162,6 @@ contract CelerClient is MessageApp, AdminControl {
             uint256 old_balance = IERC20(_underlying).balanceOf(token);
             IERC20(_underlying).safeTransferFrom(msg.sender, token, amount);
             uint256 new_balance = IERC20(_underlying).balanceOf(token);
-
             // update amount to real balance increasement (some token may deduct fees)
             amount = new_balance > old_balance ? new_balance - old_balance : 0;
         } else {
@@ -162,23 +174,10 @@ contract CelerClient is MessageApp, AdminControl {
             amount,
             msg.sender,
             receiver,
-            toChainId,
             weights,
             periodId
         );
-        sendMessageWithTransfer(
-            receiver,
-            token,
-            amount,
-            uint64(toChainId),
-            0,
-            0, //_nonce, //--->
-            //_maxSlippage, //--->
-            data,
-            _bridgeSendType,
-            msg.value
-        );
-
+        sendMessage(clientPeer, uint64(toChainId), data, msg.value);
         if (msg.value > 0) {
             uint256 newCoinBalance = address(this).balance;
             if (newCoinBalance > oldCoinBalance) {
@@ -203,17 +202,69 @@ contract CelerClient is MessageApp, AdminControl {
     /**
      * @notice Called by MessageBus to execute a message with an associated token transfer.
      * The contract is guaranteed to have received the right amount of tokens before this function is called.
-     * @param _token The address of the token that comes out of the bridge
-     * @param _amount The amount of tokens received at this contract through the cross-chain bridge.
+     * @param _srcContract Address of the token from where tokens are bridged
      * @param _srcChainId The source chain ID where the transfer is originated from
      * @param _data Arbitrary message bytes originated from and encoded by the source app contract
      */
 
-    function executeMessageWithTransfer(
-        address srcContract,
-        address _token,
-        uint256 _amount,
+    function executeMessage(
+        address _srcContract,
         uint64 _srcChainId,
+        bytes calldata _data,
+        address // executor
+    ) external payable override onlyMessageBus returns (ExecutionStatus) {
+        (
+            address srcToken,
+            address dstToken,
+            uint256 amount,
+            address sender,
+            address receiver,
+            int256[] memory weights,
+            uint256 periodId
+        ) = abi.decode(
+                _data,
+                (
+                    address,
+                    address,
+                    uint256,
+                    address,
+                    address,
+                    int256[],
+                    uint256
+                )
+            );
+        require(
+            clientPeers[_srcChainId] == _srcContract,
+            "CelerCLient: wrong context"
+        );
+        require(
+            tokenPeers[dstToken][_srcChainId] == srcToken,
+            "CelerCLient: mismatch source token"
+        );
+
+        address _underlying = ICelerToken(dstToken).underlying();
+
+        if (
+            _underlying != address(0) &&
+            (IERC20(_underlying).balanceOf(dstToken) >= amount)
+        ) {
+            ICelerToken(dstToken).mint(address(this), amount);
+            ICelerToken(dstToken).withdraw(amount, receiver);
+        } else {
+            assert(ICelerToken(dstToken).mint(receiver, amount));
+        }
+
+        //ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
+
+        emit MessageReceived(_srcContract, _srcChainId, sender, _data);
+        return ExecutionStatus.Success;
+    }
+
+    function executeMessageWithTransferFallback(
+        address, //_sender,
+        address, // _token
+        uint256, // _amount
+        uint64, //_srcChainId,
         bytes calldata _data,
         address // executor
     ) external payable override onlyMessageBus returns (ExecutionStatus) {
@@ -240,65 +291,6 @@ contract CelerClient is MessageApp, AdminControl {
                 )
             );
 
-        //(address from, uint256 fromChainId, ) = IAnycallExecutor(executor)
-        //    .context();
-        require(
-            clientPeers[_srcChainId] == srcContract,
-            "CelerCLient: wrong context"
-        );
-        require(
-            tokenPeers[dstToken][_srcChainId] == srcToken,
-            "CelerCLient: mismatch source token"
-        );
-
-        address _underlying = _getUnderlying(dstToken);
-
-        if (
-            _underlying != address(0) &&
-            (IERC20(_underlying).balanceOf(dstToken) >= amount)
-        ) {
-            ICelerToken(dstToken).mint(address(this), amount);
-            ICelerToken(dstToken).withdraw(amount, receiver);
-        } else {
-            assert(ICelerToken(dstToken).mint(receiver, amount));
-        }
-
-        ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
-
-        emit LogSwapin(dstToken, sender, receiver, amount, 0, weights);
-
-        return ExecutionStatus.Success;
-    }
-
-    function executeMessageWithTransferFallback(
-        address _sender,
-        address, // _token
-        uint256, // _amount
-        uint64 ,//_srcChainId,
-        bytes calldata _data,
-        address // executor
-    ) external payable override onlyMessageBus returns (ExecutionStatus) {
-        (
-            address srcToken,
-            address dstToken,
-            uint256 amount,
-            address sender,
-            address receiver,
-            uint256 toChainId,
-            int256[] memory weights
-        ) = abi.decode(
-                _data,
-                (
-                    address,
-                    address,
-                    uint256,
-                    address,
-                    address,
-                    uint256,
-                    int256[]
-                )
-            );
-
         require(
             clientPeers[toChainId] == receiver,
             "AnycallClient: mismatch dest client"
@@ -310,50 +302,12 @@ contract CelerClient is MessageApp, AdminControl {
 
         emit LogSwapoutFail(
             srcToken,
-            _sender,
+            sender,
             receiver,
             amount,
             toChainId,
             weights
         );
-
         return ExecutionStatus.Fail;
-    }
-
-    function calcFees(
-        address token,
-        uint256 amount,
-        address receiver,
-        uint256 toChainId,
-        int256[] memory weights,
-        uint256 periodId
-    ) external view returns (uint256) {
-        address dstToken = tokenPeers[token][toChainId];
-        require(dstToken != address(0), "AnycallClient: no dest token");
-
-        bytes memory data = abi.encode(
-            token,
-            dstToken,
-            amount,
-            msg.sender,
-            receiver,
-            toChainId,
-            weights,
-            periodId
-        );
-
-        return calcFee(data);
-        //0;
-    }
-
-    function _getUnderlying(address token) internal returns (address) {
-        (bool success, bytes memory returndata) = token.call(
-            abi.encodeWithSelector(0x6f307dc3)
-        );
-        if (success && returndata.length > 0) {
-            address _underlying = abi.decode(returndata, (address));
-            return _underlying;
-        }
-        return address(0);
     }
 }

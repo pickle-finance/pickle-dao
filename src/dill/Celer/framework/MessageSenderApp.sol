@@ -13,9 +13,6 @@ import "./MessageBusAddress.sol";
 abstract contract MessageSenderApp is MessageBusAddress {
     using SafeERC20 for IERC20;
 
-    uint256 public feeBase;
-    uint256 public feePerByte;
-
     // ============== Utility functions called by apps ==============
 
     /**
@@ -127,25 +124,5 @@ abstract contract MessageSenderApp is MessageBusAddress {
                 messageBus,
                 0
             );
-    }
-
-    /**
-     * @notice Calculates the required fee for the message.
-     * @param _message Arbitrary message bytes to be decoded by the destination app contract.
-     @ @return The required fee.
-     */
-    function calcFee(bytes memory _message) public view returns (uint256) {
-        return feeBase + _message.length * feePerByte;
-    }
-
-    // -------------------- Admin --------------------
-
-    function setFeePerByte(uint256 _fee) external onlyOwner {
-        feePerByte = _fee;
-        
-    }
-
-    function setFeeBase(uint256 _fee) external onlyOwner {
-        feeBase = _fee;
     }
 }
