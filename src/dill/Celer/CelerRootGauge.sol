@@ -70,13 +70,6 @@ contract CelerRootGauge is ProtocolGovernance, ReentrancyGuard {
         );
         _;
     }
-    modifier onlyGov() {
-        require(
-            msg.sender == governance,
-            "Operation allowed by only governance"
-        );
-        _;
-    }
 
     /* ========== CONSTRUCTOR ========== */
 
