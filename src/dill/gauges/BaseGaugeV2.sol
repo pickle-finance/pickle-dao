@@ -155,12 +155,12 @@ abstract contract BaseGaugeV2 is ProtocolGovernance, ReentrancyGuard {
      * @return  uint256  Lock multiplier
      */
     function lockMultiplier(uint256 _secs) public view returns (uint256) {
-        uint256 lockMultiplier = uint256(_MultiplierPrecision) +
+        uint256 _lockMultiplier = uint256(_MultiplierPrecision) +
             ((_secs * (lockMaxMultiplier - _MultiplierPrecision)) /
                 (lockTimeForMaxMultiplier));
-        if (lockMultiplier > lockMaxMultiplier)
-            lockMultiplier = lockMaxMultiplier;
-        return lockMultiplier;
+        if (_lockMultiplier > lockMaxMultiplier)
+            _lockMultiplier = lockMaxMultiplier;
+        return _lockMultiplier;
     }
 
     /* ========== MUTATIVE FUNCTIONS ========== */
