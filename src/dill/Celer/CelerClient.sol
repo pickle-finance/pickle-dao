@@ -120,10 +120,6 @@ contract CelerClient is MessageApp, AdminControl {
         distributor = _distributor;
     }
 
-    function mintCelerToken(address token) external {
-        ICelerToken(token).mint(address(this), 100000);
-    }
-
     /**
     @dev Call by the user to submit a request for a cross chain interaction
     @param token : address of celer token 
@@ -250,5 +246,33 @@ contract CelerClient is MessageApp, AdminControl {
 
         emit MessageReceived(_srcContract, _srcChainId, sender, _data);
         return ExecutionStatus.Success;
+    }
+
+    function calcFees(
+        address token,
+        uint256 amount,
+        address receiver,
+        uint256 toChainId,
+        int256[] memory weights,
+        uint256 periodId
+    ) external returns (uint256) {
+        address dstToken = tokenPeers[token][toChainId];
+        bytes memory data = abi.encode(
+            token,
+            dstToken,
+            amount,
+            msg.sender,
+            receiver,
+            weights,
+            periodId
+        );
+        (bool success, bytes memory returndata) = messageBus.call(
+            abi.encodeWithSelector(0x5335dca2, data)
+        );
+        if (success && returndata.length > 0) {
+            uint256 fees = abi.decode(returndata, (uint256));
+            return fees;
+        }
+        return 0;
     }
 }
