@@ -329,8 +329,8 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         address receiver,
         uint256 toChainId,
         int256[] memory weights,
-        uint256 periodId //onlyDistributor whenNotPaused(PAUSE_SWAPOUT_ROLE)
-    ) external payable {
+        uint256 periodId 
+    ) external payable onlyDistributor whenNotPaused(PAUSE_SWAPOUT_ROLE){
         address clientPeer = clientPeers[toChainId];
         require(clientPeer != address(0), "AnycallClient: no dest client");
 
