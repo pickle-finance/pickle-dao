@@ -68,7 +68,7 @@ contract CelerClient is MessageApp, AdminControl {
         uint256 toChainId,
         int256[] weights
     );
-     event MessageReceived(
+    event MessageReceived(
         address srcContract,
         uint64 srcChainId,
         address sender,
@@ -141,7 +141,7 @@ contract CelerClient is MessageApp, AdminControl {
         uint256 toChainId,
         int256[] memory weights,
         uint256 periodId
-    ) external payable {
+    ) external payable onlyDistributor {
         address clientPeer = clientPeers[toChainId];
         require(clientPeer != address(0), "CelerCLient: no dest client");
 
@@ -223,15 +223,7 @@ contract CelerClient is MessageApp, AdminControl {
             uint256 periodId
         ) = abi.decode(
                 _data,
-                (
-                    address,
-                    address,
-                    uint256,
-                    address,
-                    address,
-                    int256[],
-                    uint256
-                )
+                (address, address, uint256, address, address, int256[], uint256)
             );
         require(
             clientPeers[_srcChainId] == _srcContract,
@@ -254,60 +246,9 @@ contract CelerClient is MessageApp, AdminControl {
             assert(ICelerToken(dstToken).mint(receiver, amount));
         }
 
-        //ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
+        ISidechainGaugeProxy(receiver).sendRewards(periodId, amount, weights);
 
         emit MessageReceived(_srcContract, _srcChainId, sender, _data);
         return ExecutionStatus.Success;
-    }
-
-    function executeMessageWithTransferFallback(
-        address, //_sender,
-        address, // _token
-        uint256, // _amount
-        uint64, //_srcChainId,
-        bytes calldata _data,
-        address // executor
-    ) external payable override onlyMessageBus returns (ExecutionStatus) {
-        (
-            address srcToken,
-            address dstToken,
-            uint256 amount,
-            address sender,
-            address receiver,
-            uint256 toChainId,
-            int256[] memory weights,
-            uint256 periodId
-        ) = abi.decode(
-                _data,
-                (
-                    address,
-                    address,
-                    uint256,
-                    address,
-                    address,
-                    uint256,
-                    int256[],
-                    uint256
-                )
-            );
-
-        require(
-            clientPeers[toChainId] == receiver,
-            "AnycallClient: mismatch dest client"
-        );
-        require(
-            tokenPeers[srcToken][toChainId] == dstToken,
-            "AnycallClient: mismatch dest token"
-        );
-
-        emit LogSwapoutFail(
-            srcToken,
-            sender,
-            receiver,
-            amount,
-            toChainId,
-            weights
-        );
-        return ExecutionStatus.Fail;
     }
 }

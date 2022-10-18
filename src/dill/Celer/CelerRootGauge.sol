@@ -36,7 +36,7 @@ contract CelerRootGauge is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public constant PICKLE =
-        IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5);
+        IERC20(0x1Fcf02E6C31f3De71E7d164AC0e7fC3CaFDC0E38);
 
     // Constant for various precisions
     uint256 public constant DURATION = 7 days;
@@ -166,20 +166,20 @@ contract CelerRootGauge is ProtocolGovernance, ReentrancyGuard {
         );
         emit RewardAdded(_reward);
 
-        uint256 fee = celerClient.calcFees(
-            address(celerToken),
-            _reward,
-            sidechainGaugeProxy,
-            chainId,
-            _weights,
-            periodId
-        );
-        require(fee <= msg.value, "insufficient fee");
+        // uint256 fee = celerClient.calcFees(
+        //     address(celerToken),
+        //     _reward,
+        //     sidechainGaugeProxy,
+        //     chainId,
+        //     _weights,
+        //     periodId
+        // );
+        // require(fee <= msg.value, "insufficient fee");
 
         PICKLE.safeApprove(address(celerClient), 0);
         PICKLE.safeApprove(address(celerClient), _reward);
 
-        celerClient.bridge{value: fee}(
+        celerClient.bridge{value: msg.value}(
             address(celerToken),
             _reward,
             sidechainGaugeProxy,
