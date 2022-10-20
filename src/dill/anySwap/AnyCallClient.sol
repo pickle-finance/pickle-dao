@@ -202,6 +202,7 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
     // associated tokens on each chain
     mapping(address => mapping(uint256 => address)) public tokenPeers;
 
+    /* ========== EVENTS ========== */
     event LogSwapout(
         address indexed token,
         address indexed sender,
@@ -227,11 +228,13 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         int256[] weights
     );
 
+    /* ========== MODIFIERS ========== */
     modifier onlyDistributor() {
         require(msg.sender == distributor, "AnycallClient: onlyDistributor");
         _;
     }
 
+    /* ========== CONSTRUCTOR ========== */
     constructor(
         address _admin,
         address _callProxy,
@@ -240,6 +243,56 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         distributor = _distributor;
     }
 
+    /* ========== VIEWS ========== */
+
+    /**
+     * @notice  Calculate fees required for bridging
+     * @param   token  Destination token address
+     * @param   amount  Amount of tokens to bridge
+     * @param   receiver  Reciver's address on side chain
+     * @param   toChainId  Destination chain Id
+     * @param   weights  Weights of sidechain gauges
+     * @param   periodId  Period for which data is being bridged for
+     * @return  uint256  Fees required to bridge
+     */
+    function calcFees(
+        address token,
+        uint256 amount,
+        address receiver,
+        uint256 toChainId,
+        int256[] memory weights,
+        uint256 periodId
+    ) external view returns (uint256) {
+        address dstToken = tokenPeers[token][toChainId];
+        require(dstToken != address(0), "AnycallClient: no dest token");
+
+        bytes memory data = abi.encodeWithSelector(
+            this.anyExecute.selector,
+            token,
+            dstToken,
+            amount,
+            msg.sender,
+            receiver,
+            toChainId,
+            weights,
+            periodId
+        );
+
+        return
+            IAnycallV6Proxy(callProxy).calcSrcFees(
+                APP_ID,
+                toChainId,
+                data.length
+            );
+    }
+
+    /* ========== MUTATIVE FUNCTIONS ========== */
+    /**
+     * @notice  Set token peers
+     * @param   srcToken  Source token address
+     * @param   chainIds  Destination chain ID
+     * @param   dstTokens  Destination token address
+     */
     function setTokenPeers(
         address srcToken,
         uint256[] calldata chainIds,
@@ -251,21 +304,33 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         }
     }
 
+    /**
+     * @notice  Set new distributer
+     * @param   _distributor  New distributer address
+     */
     function setDistributor(address _distributor) external onlyAdmin {
         require(_distributor != address(0));
         distributor = _distributor;
     }
 
-    /// @dev Call by the user to submit a request for a cross chain interaction
+    /**
+     * @notice  Bridge data and tokens to side chain
+     * @dev     Call by the user to submit a request for a cross chain interaction
+     * @param   token  Address of Any-token
+     * @param   amount  Amount of tokens to be bridged
+     * @param   receiver  Receiver's address
+     * @param   toChainId  Sidechain Id
+     * @param   weights  Weights of gauges to be bidged
+     * @param   periodId  Period for which data is being bridged for
+     */
     function bridge(
         address token,
         uint256 amount,
         address receiver,
         uint256 toChainId,
         int256[] memory weights,
-        uint256 periodId
-    ) external payable //onlyDistributor whenNotPaused(PAUSE_SWAPOUT_ROLE) 
-    {
+        uint256 periodId 
+    ) external payable onlyDistributor whenNotPaused(PAUSE_SWAPOUT_ROLE){
         address clientPeer = clientPeers[toChainId];
         require(clientPeer != address(0), "AnycallClient: no dest client");
 
@@ -283,7 +348,7 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
             IERC20(token).balanceOf(msg.sender) < amount
         ) {
             uint256 old_balance = IERC20(_underlying).balanceOf(token);
-            IERC20(_underlying).safeTransferFrom(msg.sender, token, amount); 
+            IERC20(_underlying).safeTransferFrom(msg.sender, token, amount);
             uint256 new_balance = IERC20(_underlying).balanceOf(token);
 
             // update amount to real balance increasement (some token may deduct fees)
@@ -332,16 +397,17 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         );
     }
 
-    /// @notice Call by `AnycallProxy` to execute a cross chain interaction on the destination chain
+    /**
+     * @notice  Call by `AnycallProxy` to execute a cross chain interaction on the destination chain
+     * @param   data  Data that was bridged
+     * @return  success  Whether or not method executed successfully
+     */
     function anyExecute(bytes calldata data)
         external
         override
-            onlyExecutor
-            whenNotPaused(PAUSE_SWAPIN_ROLE)
-        returns (
-            bool success,
-            bytes memory result
-        )
+        onlyExecutor
+        whenNotPaused(PAUSE_SWAPIN_ROLE)
+        returns (bool success, bytes memory result)
     {
         bytes4 selector = bytes4(data[:4]);
         if (selector == this.anyExecute.selector) {
@@ -381,8 +447,7 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
 
             address _underlying = _getUnderlying(dstToken);
 
-       
-             if (
+            if (
                 _underlying != address(0) &&
                 (IERC20(_underlying).balanceOf(dstToken) >= amount)
             ) {
@@ -420,13 +485,21 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         return (true, "");
     }
 
-    /// @dev Call back by `AnycallProxy` on the originating chain if the cross chain interaction fails
+    /**
+     * @notice  FallBack for when swapout fails
+     * @dev     Call back by `AnycallProxy` on the originating chain if the cross chain interaction fails
+     * @param   to  Destination client address
+     * @param   data  Bridged data
+     */
     function anyFallback(address to, bytes memory data)
         internal
         whenNotPaused(PAUSE_FALLBACK_ROLE)
     {
         (address _from, , ) = IAnycallExecutor(executor).context();
-        require(_from == address(this), "AnycallClient(fallback): wrong context");
+        require(
+            _from == address(this),
+            "AnycallClient(fallback): wrong context"
+        );
 
         (
             bytes4 selector,
@@ -485,37 +558,11 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
         );
     }
 
-    function calcFees(
-        address token,
-        uint256 amount,
-        address receiver,
-        uint256 toChainId,
-        int256[] memory weights,
-        uint256 periodId
-    ) external view returns (uint256) {
-        address dstToken = tokenPeers[token][toChainId];
-        require(dstToken != address(0), "AnycallClient: no dest token");
-
-        bytes memory data = abi.encodeWithSelector(
-            this.anyExecute.selector,
-            token,
-            dstToken,
-            amount,
-            msg.sender,
-            receiver,
-            toChainId,
-            weights,
-            periodId
-        );
-
-        return
-            IAnycallV6Proxy(callProxy).calcSrcFees(
-                APP_ID,
-                toChainId,
-                data.length
-            );
-    }
-
+    /**
+     * @notice  Get underlying token address
+     * @param   token  Any-token address
+     * @return  address  Underlying token address or zero address if underlying is not set
+     */
     function _getUnderlying(address token) internal returns (address) {
         (bool success, bytes memory returndata) = token.call(
             abi.encodeWithSelector(0x6f307dc3)
@@ -525,8 +572,5 @@ contract AnyswapTokenAnycallClient is AnycallClientBase {
             return _underlying;
         }
         return address(0);
-    }
-    function testWoring(uint256 flag) external returns(uint256 f){
-        f = flag;
     }
 }

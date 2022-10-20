@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.1;
 
-import "../../ProtocolGovernance.sol";
+import "../ProtocolGovernance.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-interface IAnycallClient {
+interface ICelerClient {
     function testWoring(uint256 flag) external returns (uint256 f);
 
     function bridge(
@@ -28,32 +28,28 @@ interface IAnycallClient {
     ) external view returns (uint256);
 }
 
-interface IAnyToken {
+interface ICelerToken {
     function deposit(uint256 amount, address to) external returns (uint256);
 }
 
-contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
+contract CelerRootGauge is ProtocolGovernance, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @notice Token addresses
     IERC20 public constant PICKLE =
         IERC20(0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5);
 
-    /// @notice Constant for various precisions
+    // Constant for various precisions
     uint256 public constant DURATION = 7 days;
-
-    /// @notice Reward addresses
-    address[] public rewardTokens;
-
     uint256 public chainId;
     address public sidechainGaugeProxy;
 
-    IAnycallClient public anycallClient;
-    IAnyToken public anyToken;
+    //Reward addresses
+    address[] public rewardTokens;
 
-    /* ========== STRUCTS ========== */
+    ICelerClient public celerClient;
+    ICelerToken public celerToken;
 
-    /// @notice reward token details
+    // reward token details
     struct rewardTokenDetail {
         uint256 index;
         bool isActive;
@@ -63,8 +59,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         uint256 lastUpdateTime;
         uint256 periodFinish;
     }
-
-    /* ========== MAPPINGS ========== */
     mapping(address => rewardTokenDetail) public rewardTokenDetails; // token address => detatils
 
     /* ========== MODIFIERS ========== */
@@ -80,13 +74,14 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
     /* ========== CONSTRUCTOR ========== */
 
     constructor(
-        address _anycallClient,
-        address _anyToken,
+        address _celerClient,
+        address _celerToken,
         uint256 _chainId,
         address _sidechainGaugeProxy
     ) {
-        anyToken = IAnyToken(_anyToken);
-        anycallClient = IAnycallClient(_anycallClient);
+        // todo side chain id?
+        celerToken = ICelerToken(_celerToken);
+        celerClient = ICelerClient(_celerClient);
         chainId = _chainId;
         governance = msg.sender;
         sidechainGaugeProxy = _sidechainGaugeProxy;
@@ -94,10 +89,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
 
     /* ========== VIEWS ========== */
 
-    /**
-     * @notice  Get on going rewards for all reward tokens set for a period
-     * @return  rewardsPerDurationArr  Array of rewards for all set reward tokens
-     */
     function getRewardForDuration()
         external
         view
@@ -115,11 +106,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice  Set new reward token
-     * @param   _rewardToken  Address of reward token
-     * @param   _distributionForToken  Address of distribution for '_rewardToken'
-     */
     function setRewardToken(address _rewardToken, address _distributionForToken)
         public
         onlyGov
@@ -136,10 +122,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokens.push(_rewardToken);
     }
 
-    /**
-     * @notice  Set reward token inactive
-     * @param   _rewardToken  Address of reward token
-     */
     function setRewardTokenInactive(address _rewardToken) public onlyGov {
         require(
             rewardTokenDetails[_rewardToken].isActive,
@@ -148,11 +130,6 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].isActive = false;
     }
 
-    /**
-     * @notice  Set distribution for already set reward token
-     * @param   _distributionForToken  Address which can distribute '_rewardToken'
-     * @param   _rewardToken  Address of reward token
-     */
     function setDisributionForToken(
         address _distributionForToken,
         address _rewardToken
@@ -169,18 +146,11 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         rewardTokenDetails[_rewardToken].distributor = _distributionForToken;
     }
 
-    /**
-     * @notice  Fetch reward to distribute
-     * @param   _rewardToken  Address of reward token
-     * @param   _reward  Amount to be fetched
-     * @param   _weights  Array of weights for gauges
-     * @param   _periodId  Period Id for which rewards are being fetched for
-     */
     function notifyRewardAmount(
         address _rewardToken,
         uint256 _reward,
         int256[] calldata _weights,
-        uint256 _periodId
+        uint256 periodId
     ) external payable onlyDistribution(_rewardToken) {
         rewardTokenDetail memory token = rewardTokenDetails[_rewardToken];
         require(token.isActive, "Reward token not available");
@@ -196,27 +166,29 @@ contract AnyswapRootGauge is ProtocolGovernance, ReentrancyGuard {
         );
         emit RewardAdded(_reward);
 
-        uint256 fee = anycallClient.calcFees(
-            address(anyToken),
+        uint256 fee = celerClient.calcFees(
+            address(celerToken),
             _reward,
             sidechainGaugeProxy,
             chainId,
             _weights,
-            _periodId
+            periodId
         );
-        require(fee <= msg.value, "Insufficient fee");
+        require(fee <= msg.value, "insufficient fee");
 
-        PICKLE.safeApprove(address(anycallClient), 0);
-        PICKLE.safeApprove(address(anycallClient), _reward);
+        PICKLE.safeApprove(address(celerClient), 0);
+        PICKLE.safeApprove(address(celerClient), _reward);
 
-        anycallClient.bridge{value: fee}(
-            address(anyToken),
+        celerClient.bridge{value: fee}(
+            address(celerToken),
             _reward,
             sidechainGaugeProxy,
             chainId,
             _weights,
-            _periodId
+            periodId
         );
+
+        rewardTokenDetails[_rewardToken] = token;
     }
 
     receive() external payable {}
