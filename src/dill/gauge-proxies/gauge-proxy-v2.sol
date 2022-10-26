@@ -226,6 +226,7 @@ contract GaugeProxyV2 is
     mapping(address => address[]) public delegatedAddresses;
     mapping(address => DelegateData) public delegations;
     mapping(address => LockedStake) private _lockedStake;
+    mapping(address => mapping (address => mapping(uint256 => int256))) public lastIdVotes;
 
     uint256 public constant WEEK_SECONDS = 604800;
     uint256 public _chainIdCounter;
@@ -334,10 +335,7 @@ contract GaugeProxyV2 is
         external
         onlyGov
     {
-        require(
-            _chainId > 0 && _chainId <= _chainIdCounter,
-            "GaugeProxy: invalid chain id"
-        );
+        require(_chainId > 0, "GaugeProxy: invalid chain id");
         require(
             distributionId == getCurrentPeriodId(),
             "GaugeProxy: !all distributions complete"
@@ -467,7 +465,6 @@ contract GaugeProxyV2 is
         for (uint256 i = _start; i < _end; i++) {
             address _owner = _deletgatedAddress[i];
             DelegateData storage _delegate = delegations[_owner];
-
             if (
                 ((_delegate.delegate == msg.sender &&
                     currentId > _delegate.updatePeriodId) ||
@@ -494,7 +491,7 @@ contract GaugeProxyV2 is
         uint256 _chainId,
         address _gaugeAddress
     ) external onlyGov {
-        require(_chainId > 0, "GaugeProxy: invalid chain id");
+        // require(_chainId > 0, "GaugeProxy: invalid chain id"); (Main Chain id == 0)
 
         Gauge memory _gauge = gauges[_token];
         require(
@@ -667,12 +664,12 @@ contract GaugeProxyV2 is
         collect();
 
         int256 _balance = int256(PICKLE.balanceOf(address(this)));
+
         int256 _totalWeight = totalWeight[periodToUse];
 
         if (_balance > 0 && _totalWeight > 0) {
             for (uint256 i = _start; i < _end; i++) {
                 if (distributed[distributionId][i]) continue;
-
                 address _token = _tokens[i];
                 Gauge memory _gauge = gauges[_token];
 
@@ -719,6 +716,7 @@ contract GaugeProxyV2 is
                 }
 
                 if (_reward < 0) {
+
                     gaugeWithNegativeWeight[_gauge.gaugeAddress] += 1;
                 }
                 distributed[distributionId][i] = true;
@@ -874,6 +872,7 @@ contract GaugeProxyV2 is
         _reset(_owner, _currentId);
         uint256 _tokenCnt = _tokenVote.length;
         int256 _weight = int256(DILL.balanceOf(_owner));
+
         int256 _totalVoteWeight = 0;
         int256 _usedWeight = 0;
 
@@ -897,11 +896,12 @@ contract GaugeProxyV2 is
                     weights[_currentId][_token] = weights[
                         tokenLastVotedPeriodId[_token]
                     ][_token];
-                    tokenLastVotedPeriodId[_token] = _currentId;
                 }
 
                 weights[_currentId][_token] += _tokenWeight;
-                votes[_owner][_token] = _tokenWeight;
+                tokenLastVotedPeriodId[_token] = _currentId;
+                // votes[_owner][_token] = _tokenWeight;
+                lastIdVotes[_owner][_token][_currentId] = _tokenWeight;
                 tokenVote[_owner].push(_token);
 
                 if (_tokenWeight < 0) _tokenWeight = -_tokenWeight;
@@ -930,17 +930,17 @@ contract GaugeProxyV2 is
 
         for (uint256 i = 0; i < _tokenVoteCnt; i++) {
             address _token = _tokenVote[i];
-            int256 _votes = votes[_owner][_token];
+            int256 _votes = lastIdVotes[_owner][_token][_currentId];
 
             if (_votes != 0) {
                 totalWeight[_currentId] -= (_votes > 0 ? _votes : -_votes);
-                if (_currentId > tokenLastVotedPeriodId[_token]) {
-                    weights[_currentId][_token] = weights[
-                        tokenLastVotedPeriodId[_token]
-                    ][_token];
+                // if (_currentId > tokenLastVotedPeriodId[_token]) {
+                //     weights[_currentId][_token] = weights[
+                //         tokenLastVotedPeriodId[_token]
+                //     ][_token];
 
-                    tokenLastVotedPeriodId[_token] = _currentId;
-                }
+                //     tokenLastVotedPeriodId[_token] = _currentId;
+                // }
 
                 Gauge memory gauge = gauges[_token];
 
@@ -949,9 +949,8 @@ contract GaugeProxyV2 is
                     address _rootGauge = rootGauge[chainId];
                     weights[_currentId][_rootGauge] -= _votes;
                 }
-
-                weights[_currentId][_token] -= _votes;
-                votes[_owner][_token] = 0;
+                weights[_currentId][_token] -= (_votes > 0 ? _votes : -_votes);
+                lastIdVotes[_owner][_token][_currentId] = 0;
             }
         }
 
