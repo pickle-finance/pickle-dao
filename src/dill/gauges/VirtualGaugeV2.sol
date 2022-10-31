@@ -53,9 +53,9 @@ contract VirtualGaugeV2 is
         address _governance,
         address _gaugeProxy
     ) {
-        require(_jar == address(0), "Cannot set token to zero address");
-        require(_governance == address(0), "Cannot set governance to zero address");
-        require(_gaugeProxy == address(0), "Cannot set gaugeProxy to zero address");
+        require(_jar != address(0), "Cannot set token to zero address");
+        require(_governance != address(0), "Cannot set governance to zero address");
+        require(_gaugeProxy != address(0), "Cannot set gaugeProxy to zero address");
         jar = IJar(_jar);
         governance = _governance;
         gaugeProxy = IGaugeProxyV2(_gaugeProxy);
@@ -213,7 +213,7 @@ contract VirtualGaugeV2 is
         onlyJarAndAuthorised
     {
         require(_amount > 0, "Cannot deposit 0");
-        _deposit(_amount, _account, 0, 0, false);
+        _deposit(_amount, _account, 0, 0, false, true);
     }
 
     /**
@@ -245,7 +245,8 @@ contract VirtualGaugeV2 is
             _account,
             _secs,
             block.timestamp,
-            _isPermanentlyLocked
+            _isPermanentlyLocked,
+            false
         );
     }
 
@@ -282,7 +283,8 @@ contract VirtualGaugeV2 is
         address _account,
         uint256 _secs,
         uint256 _startTimestamp,
-        bool _isPermanentlyLocked
+        bool _isPermanentlyLocked,
+        bool _depositOnly
     ) internal nonReentrant updateReward(_account, false) {
         LockedStake memory _lockedStake = _lockedStakes[_account];
 
@@ -308,6 +310,9 @@ contract VirtualGaugeV2 is
             _lockedStake.isPermanentlyLocked = _isPermanentlyLocked;
         }
 
+        if (!_depositOnly) {
+                _lockedStake.liquidity += _amount;
+            }
         _lockedStakes[_account] = _lockedStake;
 
         // Needed for edge case if the staker only claims once, and after the lock expired
@@ -378,17 +383,17 @@ contract VirtualGaugeV2 is
         returns (uint256)
     {
         LockedStake memory thisStake = _lockedStakes[_account];
-
+        uint256 amountToWithdraw = 0;
         //  If user wants to withdraw locked stake
         if (thisStake.liquidity > 0 && _amount == 0) {
             require(
                 stakesUnlocked ||
                     stakesUnlockedForAccount[_account] ||
-                    !thisStake.isPermanentlyLocked ||
+                    !thisStake.isPermanentlyLocked &&
                     thisStake.endingTimestamp < block.timestamp,
                 "Cannot withdraw more than non-staked amount"
             );
-            _amount = thisStake.liquidity;
+            amountToWithdraw = thisStake.liquidity;
             delete _lockedStakes[_account];
         }
 
@@ -398,9 +403,10 @@ contract VirtualGaugeV2 is
                 _amount + thisStake.liquidity <= balanceOf(_account),
                 "Cannot withdraw more than your non-staked balance"
             );
+            amountToWithdraw = _amount;
         }
-        emit Withdrawn(_account, _amount);
-        return _amount;
+        emit Withdrawn(_account, amountToWithdraw);
+        return amountToWithdraw;
     }
 
     /// @notice Claim accumulated reward
@@ -409,6 +415,7 @@ contract VirtualGaugeV2 is
         nonReentrant
         updateReward(_account, true)
         onlyJarAndAuthorised
+        returns(uint256 reward)
     {
         uint256 reward;
 
@@ -453,8 +460,8 @@ contract VirtualGaugeV2 is
 
     /// @notice Exit from Gauge i.e. Withdraw complete liquidity and claim reward
     function exit(address account) external {
-        withdrawAll(account);
         getReward(account);
+        withdrawAll(account);
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */

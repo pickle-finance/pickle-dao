@@ -1,4 +1,4 @@
-const { advanceNDays, advanceSevenDays } = require("./testHelper");
+const { advanceNDays, advanceSevenDays, resetHardhatNetwork, deployGaugeProxy, unlockAccount } = require("./testHelper");
 const hre = require("hardhat");
 const { ethers, upgrades } = require("hardhat");
 const { expect } = require("chai");
@@ -29,30 +29,13 @@ let userSigner,
   Zoro,
   Sanji,
   Nami,
+  GaugeFromGovernance,
   userWithNoPickleOrDill;
 const fivePickle = ethers.utils.parseEther("5");
 
-const printStakes = async (address) => {
-  let stakes = await Jar.getLockedStakesOf(address);
-  console.log(
-    "********************* Locked stakes ********************************************"
-  );
-  stakes.forEach((stake, index) => {
-    console.log(
-      "Liquidity in stake with index",
-      index,
-      ethers.utils.formatEther(stake.liquidity),
-      "ending timestamp",
-      stake.ending_timestamp
-    );
-  });
-  console.log(
-    "*******************************************************************************"
-  );
-};
-
 describe("Liquidity Staking tests", () => {
   before("Setting up gaugeV2", async () => {
+    resetHardhatNetwork();
     const signer = ethers.provider.getSigner();
     pickleHolderSigner = ethers.provider.getSigner(pickleHolder);
     userSigner = ethers.provider.getSigner(userAddr);
@@ -77,25 +60,10 @@ describe("Liquidity Staking tests", () => {
     console.log("------------------------ sent ------------------------");
 
     /** unlock accounts */
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [governanceAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [userAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [dillHolder],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [pickleHolder],
-    });
+    await unlockAccount(governanceAddr);
+    await unlockAccount(userAddr);
+    await unlockAccount(dillHolder);
+    await unlockAccount(pickleHolder);
 
     pickle = await ethers.getContractAt(
       "src/yield-farming/pickle-token.sol:PickleToken",
@@ -111,22 +79,38 @@ describe("Liquidity Staking tests", () => {
     await Jar.deployed();
     console.log("Jar deployed at", Jar.address);
 
+    console.log("Deploying MasterChef...");
+    GaugeProxyV2 = await deployGaugeProxy(governanceSigner);
+    console.log("GaugeProxyV2 deployed to:", GaugeProxyV2.address);
+
+    const mDILLAddr = await GaugeProxyV2.TOKEN();
+    console.log("-- Adding mDILL to MasterChef --");
+
+    let populatedTx = await masterChef.populateTransaction.add(
+      5000000,
+      mDILLAddr,
+      false
+    );
+    await governanceSigner.sendTransaction(populatedTx);
+
     console.log("-- Deploying VirtualGaugeV2 contract --");
     const virtualGaugeV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxy-v2.sol:VirtualGaugeV2",
+      "/src/dill/gauges/VirtualGaugeV2.sol:VirtualGaugeV2",
       pickleHolderSigner
     );
+
     VirtualGaugeV2 = await virtualGaugeV2.deploy(
       Jar.address,
       governanceAddr,
-      pickleHolder,
-      ["PICKLE"],
-      [pickleAddr]
+      GaugeProxyV2.address
     );
+
     await VirtualGaugeV2.deployed();
     thisContractAddr = VirtualGaugeV2.address;
+    await VirtualGaugeV2.connect(governanceSigner).setRewardToken(pickleAddr, GaugeProxyV2.address);
     console.log("VirtualGaugeV2 deployed to:", thisContractAddr);
 
+    GaugeFromGovernance = VirtualGaugeV2.connect(governanceSigner);
     GaugeFromUser = VirtualGaugeV2.connect(userSigner);
     const pickleFromHolder = pickle.connect(pickleHolderSigner);
 
@@ -159,7 +143,7 @@ describe("Liquidity Staking tests", () => {
     );
   });
   // await hre.network.provider.send("hardhat_reset");
-  it("Should successfully test virtual Gauge and gaugeProxyV2 together", async () => {
+  it.only("Should successfully test virtual Gauge and gaugeProxyV2 together", async () => {
     //deploy gaugeproxy
     userSigner = ethers.provider.getSigner(userAddr);
     const masterChef = await ethers.getContractAt(
@@ -169,127 +153,50 @@ describe("Liquidity Staking tests", () => {
     );
     masterChef.connect(governanceSigner);
 
-    /** Deploy gaugeProxyV2 */
-    console.log("-- Deploying GaugeProxy v2 contract --");
-
-    const gaugeProxyV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxy-v2.sol:GaugeProxyV2",
-      governanceSigner
-    );
-
-    // getting timestamp
-    const blockNumBefore = await ethers.provider.getBlockNumber();
-    const blockBefore = await ethers.provider.getBlock(blockNumBefore);
-    const timestampBefore = blockBefore.timestamp;
-    // console.log(timestampBefore);
-
-    GaugeProxyV2 = await upgrades.deployProxy(gaugeProxyV2, [timestampBefore], {
-      initializer: "initialize",
-    });
-    await GaugeProxyV2.deployed();
-    console.log("GaugeProxyV2 deployed to:", GaugeProxyV2.address);
-
-    const mDILLAddr = await GaugeProxyV2.TOKEN();
-    console.log("-- Adding mDILL to MasterChef --");
-
-    let populatedTx = await masterChef.populateTransaction.add(
-      5000000,
-      mDILLAddr,
-      false
-    );
-    await governanceSigner.sendTransaction(populatedTx);
-
-    console.log("-- Deploying VirtualGaugeMiddleware contract --");
-    const virtualGaugeMiddleware = await ethers.getContractFactory(
-      "/src/dill/gauge-middleware.sol:VirtualGaugeMiddleware",
-      governanceSigner
-    );
-
-    /** Deploy gaugeMiddleware successfully */
     await expect(
-      upgrades.deployProxy(
-        virtualGaugeMiddleware,
-        [governanceAddr, governanceAddr],
-        {
-          initializer: "initialize",
-        }
+      GaugeProxyV2.connect(userSigner).addVirtualGauge(
+        pickleAddr,
+        0,
+        thisContractAddr
       )
-    ).to.be.revertedWith("_governance address and _gaugeProxy cannot be same");
+    ).to.be.revertedWith("Operation allowed by only governance");
 
     await expect(
-      upgrades.deployProxy(virtualGaugeMiddleware, [zeroAddr, governanceAddr], {
-        initializer: "initialize",
-      })
-    ).to.be.revertedWith("_gaugeProxy address cannot be set to zero");
-
-    const VirtualGaugeMiddleware = await upgrades.deployProxy(
-      virtualGaugeMiddleware,
-      [masterChefAddr, governanceAddr],
-      {
-        initializer: "initialize",
-      }
-    );
-    await VirtualGaugeMiddleware.deployed();
-    console.log(
-      "VirtualGaugeMiddleware deployed at",
-      VirtualGaugeMiddleware.address
-    );
-
-    /** add gaugeMiddleware*/
-    await expect(
-      VirtualGaugeMiddleware.connect(userSigner).changeGaugeProxy(
-        GaugeProxyV2.address
+      GaugeProxyV2.connect(governanceSigner).addVirtualGauge(
+        pickleAddr,
+        0,
+        zeroAddr
       )
-    ).to.be.revertedWith("can only be called by gaugeProxy");
+    ).to.be.revertedWith("GaugeProxy: invalid Gauge Address");
 
-    await VirtualGaugeMiddleware.changeGaugeProxy(GaugeProxyV2.address);
-
-    await expect(
-      GaugeProxyV2.addVirtualGaugeMiddleware(zeroAddr)
-    ).to.be.revertedWith("virtualGaugeMiddleware cannot set to zero");
-
-    console.log("-- Adding Virtual Gauge middleWare --");
-    await GaugeProxyV2.addVirtualGaugeMiddleware(
-      VirtualGaugeMiddleware.address
-    );
-
-    await expect(
-      VirtualGaugeMiddleware.addVirtualGauge(
-        pickleLP,
-        Jar.address,
-        ["PKL"],
-        [pickleAddr]
-      )
-    ).to.be.revertedWith("can only be called by gaugeProxy");
-
-    await expect(
-      GaugeProxyV2.addVirtualGauge(pickleLP, zeroAddr)
-    ).to.be.revertedWith("address of jar cannot be zero");
+    await GaugeProxyV2.connect(governanceSigner).addVirtualGauge(
+      pickleAddr,
+      0,
+      thisContractAddr
+    )
 
     console.log("-- Adding PICKLE LP Gauge --");
-    await GaugeProxyV2.addVirtualGauge(pickleLP, Jar.address);
+    await GaugeProxyV2.addGauge(pickleLP, 0, thisContractAddr);
 
     console.log("-- Adding pyveCRVETH Gauge --");
-    await GaugeProxyV2.addVirtualGauge(pyveCRVETH, Jar.address);
+    await GaugeProxyV2.addGauge(pyveCRVETH, 0, thisContractAddr);
 
-    const pidDill = (await masterChef.poolLength()) - 1;
-    await GaugeProxyV2.setPID(pidDill);
-    await GaugeProxyV2.deposit();
 
     // vote
     console.log("-- VOTING --");
+    advanceSevenDays();
     populatedTx = await GaugeProxyV2.connect(
       userSigner
     ).populateTransaction.vote([pickleLP, pyveCRVETH], [6000000, 4000000], {
-      gasLimit: 9000000,
+      gasLimit: 5999999,
     });
     await userSigner.sendTransaction(populatedTx);
 
-    advanceSevenDays();
   });
-  it("Should upgrade gaugeProxy successfully", async () => {
+  it.only("Should upgrade gaugeProxy successfully", async () => {
+    advanceSevenDays();
     const gaugeProxyV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxy-v2.sol:GaugeProxyV2",
+      "/src/dill/gauge-proxies/gauge-proxy-v2.sol:GaugeProxyV2",
       governanceSigner
     );
     console.log("Upgrading GaugeProxy...");
@@ -300,18 +207,17 @@ describe("Liquidity Staking tests", () => {
     console.log("gaugeProxy upgraded");
 
     console.log("check =>", await upgradeGaugeProxy.length());
-
+    console.log("HHH", await VirtualGaugeV2.rewardTokenDetails(pickleAddr));
     console.log("-- Distributing --");
-    await GaugeProxyV2.distribute(0, 2, {
-      gasLimit: 9000000,
+    await GaugeProxyV2.connect(governanceSigner).distribute(0, 2, {
+      gasLimit: 5999999,
     });
 
     let pickleGaugeAddr = await GaugeProxyV2.getGauge(pickleLP);
     let yvecrvGaugeAddr = await GaugeProxyV2.getGauge(pyveCRVETH);
-    let pickleRewards = Number(await pickle.balanceOf(pickleGaugeAddr));
+    let pickleRewards = Number(await pickle.balanceOf(pickleGaugeAddr.gaugeAddress));
     console.log("Rewards to Pickle gauge => ", pickleRewards.toString());
-
-    let yvecrvRewards = Number(await pickle.balanceOf(yvecrvGaugeAddr));
+    let yvecrvRewards = Number(await pickle.balanceOf(yvecrvGaugeAddr.gaugeAddress));
     console.log("Rewards to pyveCRV gauge => ", yvecrvRewards.toString());
   });
 });

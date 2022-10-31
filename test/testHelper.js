@@ -2,19 +2,13 @@ const hre = require("hardhat");
 const {ethers} = require("hardhat");
 
 const pickleAddr = "0x429881672B9AE42b8EbA0E26cD9C73711b891Ca5";
+const masterChefAddr = "0xbD17B1ce622d73bD438b9E658acA5996dc394b0d";
 
 async function advanceNDays(days) {
   /**************** increase time by 7 days ******************* */
   console.log(`-- Advancing ${days} dyas --`);
-  await hre.network.provider.request({
-    method: "evm_increaseTime",
-    params: [3600 * 24 * days],
-  });
-
-  /** ******************* mine block ************************* */
-  await hre.network.provider.request({
-    method: "evm_mine",
-  });
+  await network.provider.send("evm_increaseTime", [3600 * 24 * days])
+  await network.provider.send("evm_mine") 
 }
 
 async function advanceSevenDays() {
@@ -48,8 +42,87 @@ async function distribute(GaugeProxyV2, lpAddr, start, end) {
   return rewards;
 }
 
+async function resetHardhatNetwork(){
+  await network.provider.request({
+    method: "hardhat_reset",
+    params: [
+      {
+        forking: {
+          jsonRpcUrl: "https://mainnet.infura.io/v3/a8b8321889b04a2a8f089680a4dd31b1",
+        },
+      },
+    ],
+  });
+}
+
+async function deployGaugeProxy(actor){
+
+  masterChef = await ethers.getContractAt(
+    "src/yield-farming/masterchef.sol:MasterChef",
+    masterChefAddr,
+    actor
+  );
+  masterChef.connect(actor);
+
+  console.log("-- Deploying GaugeProxy v2 contract --");
+    const gaugeProxyV2 = await ethers.getContractFactory(
+      "/src/dill/gauge-proxies/gauge-proxy-v2.sol:GaugeProxyV2",
+      actor
+    );
+
+    // getting timestamp
+    const blockNumBefore = await ethers.provider.getBlockNumber();
+    const blockBefore = await ethers.provider.getBlock(blockNumBefore);
+    const timestampBefore = blockBefore.timestamp;
+
+    const GaugeProxyV2 = await upgrades.deployProxy(
+      gaugeProxyV2,
+      [timestampBefore + 86400 * 7],
+      {
+        initializer: "initialize",
+      }
+    );
+    await GaugeProxyV2.deployed();
+
+    const mDILLAddr = await GaugeProxyV2.TOKEN();
+    console.log("-- Adding mDILL to MasterChef --");
+
+    populatedTx = await masterChef.populateTransaction.add(
+      5000000,
+      mDILLAddr,
+      false
+    );
+    await actor.sendTransaction(populatedTx);
+    
+    const pidDill = (await masterChef.poolLength()) - 1;
+    await GaugeProxyV2.setPID(pidDill);
+    await GaugeProxyV2.deposit();
+    return GaugeProxyV2;
+
+}
+
+async function deployGauge(token, actor, gaugeProxyAddress,rewardToken){
+  console.log("Deploying gauges");
+  const gauge = await ethers.getContractFactory("GaugeV2");
+  const Gauge = await gauge.deploy(token, actor, gaugeProxyAddress);
+  await Gauge.deployed();
+  await Gauge.setRewardToken(rewardToken, gaugeProxyAddress);
+  return Gauge;
+}
+
+async function unlockAccount(address){
+  await hre.network.provider.request({
+    method: "hardhat_impersonateAccount",
+    params: [address],
+  });
+}
+
 module.exports = {
   advanceNDays,
   advanceSevenDays,
   distribute,
+  resetHardhatNetwork,
+  deployGaugeProxy,
+  deployGauge,
+  unlockAccount
 };

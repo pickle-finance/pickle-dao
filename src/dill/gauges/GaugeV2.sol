@@ -55,9 +55,9 @@ contract GaugeV2 is BaseGaugeV2 {
         address _governance,
         address _gaugeProxy
     ) {
-        require(_token == address(0), "Cannot set token to zero address");
-        require(_governance == address(0), "Cannot set governance to zero address");
-        require(_gaugeProxy == address(0), "Cannot set gaugeProxy to zero address");
+        require(_token != address(0), "Cannot set token to zero address");
+        require(_governance != address(0), "Cannot set governance to zero address");
+        require(_gaugeProxy != address(0), "Cannot set gaugeProxy to zero address");
         TOKEN = IERC20(_token);
         governance = _governance;
         gaugeProxy = IGaugeProxyV2(_gaugeProxy);
@@ -143,7 +143,7 @@ contract GaugeV2 is BaseGaugeV2 {
      */
     function setStakingDelegate(address _delegate) public {
         require(
-            stakingDelegates[msg.sender][_delegate],
+            !stakingDelegates[msg.sender][_delegate],
             "Already a staking delegate for user!"
         );
         require(_delegate != msg.sender, "Cannot delegate to self");
@@ -451,7 +451,6 @@ contract GaugeV2 is BaseGaugeV2 {
      * @return  uint256  Amount withdrawn
      */
     function withdrawNonStaked(uint256 _amount) public returns (uint256) {
-        require(_amount > 0, "Amount must be greater than 0");
         return _withdraw(msg.sender, _amount);
     }
 
@@ -491,17 +490,17 @@ contract GaugeV2 is BaseGaugeV2 {
         returns (uint256)
     {
         LockedStake memory thisStake = _lockedStakes[msg.sender];
-
+        uint256 amountToWithdraw = 0;
         //  If user wants to withdraw locked stake
         if (thisStake.liquidity > 0 && _amount == 0) {
             require(
                 stakesUnlocked ||
                     stakesUnlockedForAccount[_account] ||
-                    !thisStake.isPermanentlyLocked ||
+                    !thisStake.isPermanentlyLocked &&
                     thisStake.endingTimestamp < block.timestamp,
                 "Cannot withdraw more than non-staked amount"
             );
-            _amount = thisStake.liquidity;
+            amountToWithdraw = thisStake.liquidity;
             delete _lockedStakes[_account];
         }
 
@@ -511,14 +510,15 @@ contract GaugeV2 is BaseGaugeV2 {
                 _amount + thisStake.liquidity <= _balances[_account],
                 "Cannot withdraw more than your non-staked balance"
             );
+            amountToWithdraw = _amount;
         }
-
+        // require(amountToWithdraw > 0 , "GaugeV2 : Not enough balance to withdraw");
         // update totalSupply and balances accordingly
-        _totalSupply -= _amount;
-        _balances[_account] -= _amount;
-        TOKEN.safeTransfer(_account, _amount);
-        emit Withdrawn(_account, _amount);
-        return _amount;
+        _totalSupply -= amountToWithdraw;
+        _balances[_account] -= amountToWithdraw;
+        TOKEN.safeTransfer(_account, amountToWithdraw);
+        emit Withdrawn(_account, amountToWithdraw);
+        return amountToWithdraw;
     }
 
     /// @notice Claim reward accumulated
@@ -528,7 +528,7 @@ contract GaugeV2 is BaseGaugeV2 {
         for (uint256 i = 0; i < rewardTokens.length; i++) {
             if (rewardTokenDetails[rewardTokens[i]].isActive) {
                 reward = rewards[msg.sender][i];
-                if (reward > 0) {
+                if (reward > 0) { 
                     rewards[msg.sender][i] = 0;
                     IERC20(rewardTokens[i]).safeTransfer(msg.sender, reward);
                     emit RewardPaid(msg.sender, reward);
@@ -562,8 +562,8 @@ contract GaugeV2 is BaseGaugeV2 {
 
     /// @notice Exit from Gauge i.e. Withdraw complete liquidity and claim reward
     function exit() external {
-        withdrawAll();
         getReward();
+        withdrawAll();
     }
 
     /* ========== RESTRICTED FUNCTIONS ========== */

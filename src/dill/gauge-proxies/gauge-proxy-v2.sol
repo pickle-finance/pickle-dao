@@ -334,10 +334,7 @@ contract GaugeProxyV2 is
         external
         onlyGov
     {
-        require(
-            _chainId > 0 && _chainId <= _chainIdCounter,
-            "GaugeProxy: invalid chain id"
-        );
+        require(_chainId > 0, "GaugeProxy: invalid chain id");
         require(
             distributionId == getCurrentPeriodId(),
             "GaugeProxy: !all distributions complete"
@@ -494,7 +491,7 @@ contract GaugeProxyV2 is
         uint256 _chainId,
         address _gaugeAddress
     ) external onlyGov {
-        require(_chainId > 0, "GaugeProxy: invalid chain id");
+        // require(_chainId > 0, "GaugeProxy: invalid chain id"); (Main Chain id == 0)
 
         Gauge memory _gauge = gauges[_token];
         require(
@@ -522,7 +519,7 @@ contract GaugeProxyV2 is
         uint256 _chainId,
         address _gaugeAddress
     ) external onlyGov {
-        require(_chainId > 0, "GaugeProxy: invalid chain id");
+        // require(_chainId > 0, "GaugeProxy: invalid chain id");
         require(
             _gaugeAddress != address(0),
             "GaugeProxy: invalid Gauge Address"
@@ -897,9 +894,9 @@ contract GaugeProxyV2 is
                     weights[_currentId][_token] = weights[
                         tokenLastVotedPeriodId[_token]
                     ][_token];
-                    tokenLastVotedPeriodId[_token] = _currentId;
                 }
 
+                tokenLastVotedPeriodId[_token] = _currentId; 
                 weights[_currentId][_token] += _tokenWeight;
                 votes[_owner][_token] = _tokenWeight;
                 tokenVote[_owner].push(_token);
@@ -938,7 +935,6 @@ contract GaugeProxyV2 is
                     weights[_currentId][_token] = weights[
                         tokenLastVotedPeriodId[_token]
                     ][_token];
-
                     tokenLastVotedPeriodId[_token] = _currentId;
                 }
 
@@ -949,8 +945,7 @@ contract GaugeProxyV2 is
                     address _rootGauge = rootGauge[chainId];
                     weights[_currentId][_rootGauge] -= _votes;
                 }
-
-                weights[_currentId][_token] -= _votes;
+                weights[_currentId][_token] -= (_votes > 0 ? _votes : -_votes);
                 votes[_owner][_token] = 0;
             }
         }
