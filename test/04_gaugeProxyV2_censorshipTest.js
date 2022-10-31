@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, upgrades } = require("hardhat");
 // const {describe, it, before} = require("mocha");
-const { advanceSevenDays } = require("./testHelper");
+const { advanceSevenDays, resetHardhatNetwork, deployGaugeProxy, deployGauge, unlockAccount } = require("./testHelper");
 // const dillAddr = "0xbBCf169eE191A1Ba7371F30A1C344bFC498b29Cf";
 const governanceAddr = "0x9d074E37d408542FD38be78848e8814AFB38db17";
 const masterChefAddr = "0xbD17B1ce622d73bD438b9E658acA5996dc394b0d";
@@ -13,21 +13,12 @@ const pyveCRVETH = "0x5eff6d166d66bacbc1bf52e2c54dd391ae6b1f48";
 const dillHolder1Addr = "0x9d074e37d408542fd38be78848e8814afb38db17";
 const dillHolder2Addr = "0x5c4D8CEE7dE74E31cE69E76276d862180545c307";
 
-let GaugeProxyV2, userSigner, populatedTx, masterChef, pickle,Gauge1,Gauge2;
+let GaugeProxyV2, userSigner, populatedTx, masterChef, pickle, Gauge1, Gauge2;
 
 describe("vote & distribute", () => {
   before("setting up gaugeProxyV2", async () => {
 
-    await network.provider.request({
-      method: "hardhat_reset",
-      params: [
-        {
-          forking: {
-            jsonRpcUrl: "https://mainnet.infura.io/v3/api",
-          },
-        },
-      ],
-    });
+    await resetHardhatNetwork();
     /**
      *  sending gas cost to gov
      * */
@@ -53,90 +44,19 @@ describe("vote & distribute", () => {
       data: undefined,
     });
     /** unlock governance account */
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [governanceAddr],
-    });
-
+    await unlockAccount(governanceAddr);
     /** unlock dill holders accounts */
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [userAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [dillHolder1Addr],
-    });
-
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [dillHolder2Addr],
-    });
+    await unlockAccount(userAddr);
+    await unlockAccount(dillHolder1Addr);
+    await unlockAccount(dillHolder2Addr);
 
     const governanceSigner = ethers.provider.getSigner(governanceAddr);
     userSigner = ethers.provider.getSigner(userAddr);
-    masterChef = await ethers.getContractAt(
-      "src/yield-farming/masterchef.sol:MasterChef",
-      masterChefAddr,
-      governanceSigner
-    );
-    masterChef.connect(governanceSigner);
+    const signerAddress = await signer.getAddress()
 
-    /** Deploy gaugeProxyV2 */
-    console.log("-- Deploying GaugeProxy v2 contract --");
-    const gaugeProxyV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxies/gauge-proxy-v2.sol:GaugeProxyV2",
-      governanceSigner
-    );
-    console.log("Deploying GaugeProxyV2...");
-    // getting timestamp
-    const blockNumBefore = await ethers.provider.getBlockNumber();
-    const blockBefore = await ethers.provider.getBlock(blockNumBefore);
-    const timestampBefore = blockBefore.timestamp;
-
-    GaugeProxyV2 = await upgrades.deployProxy(
-      gaugeProxyV2,
-      [timestampBefore + 86400 * 7],
-      {
-        initializer: "initialize",
-      }
-    );
-    await GaugeProxyV2.deployed();
-    console.log("GaugeProxyV2 deployed to:", GaugeProxyV2.address);
-    console.log(
-      "currentId",
-      (await GaugeProxyV2.getCurrentPeriodId()).toString()
-    );
-
-    /** Add mDILL to MasterChef */
-    const mDILLAddr = await GaugeProxyV2.TOKEN();
-    console.log("-- Adding mDILL to MasterChef --");
-    let populatedTx;
-    populatedTx = await masterChef.populateTransaction.add(
-      5000000,
-      mDILLAddr,
-      false
-      // { gasLimit: 9000000 }
-    );
-    await governanceSigner.sendTransaction(populatedTx);
-
-    console.log("Deploying gauges");
-    let signerAddress = await signer.getAddress()
-
-    const gauge1 = await ethers.getContractFactory("GaugeV2");
-    Gauge1 = await gauge1.deploy(pickleLP, signerAddress, GaugeProxyV2.address);
-    await Gauge1.deployed();
-    await Gauge1.setRewardToken(pickleAddr, GaugeProxyV2.address);
-
-    const gauge2 = await ethers.getContractFactory("GaugeV2");
-    Gauge2 = await gauge2.deploy(pyveCRVETH, signerAddress, GaugeProxyV2.address);
-    await Gauge2.deployed();
-    await Gauge2.setRewardToken(pickleAddr, GaugeProxyV2.address);
-
-    const pidDill = (await masterChef.poolLength()) - 1;
-    await GaugeProxyV2.setPID(pidDill);
-    await GaugeProxyV2.deposit();
+    GaugeProxyV2 = await deployGaugeProxy(governanceSigner);
+    Gauge1 = await deployGauge(pickleLP, signerAddress, GaugeProxyV2.address, pickleAddr);
+    Gauge2 = await deployGauge(pyveCRVETH, signerAddress, GaugeProxyV2.address, pickleAddr);
 
     pickle = await ethers.getContractAt(
       "src/yield-farming/pickle-token.sol:PickleToken",
@@ -168,7 +88,7 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [-4000000, 6000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await userSigner.sendTransaction(populatedTx);
@@ -176,41 +96,41 @@ describe("vote & distribute", () => {
       "currentId",
       (await GaugeProxyV2.getCurrentPeriodId()).toString()
     );
-    console.log("ID:@1",await GaugeProxyV2.weights(1,pickleLP));
-    console.log("ID:@1",await GaugeProxyV2.weights(1,pyveCRVETH));
+    console.log("ID:@1", await GaugeProxyV2.weights(1, pickleLP));
+    console.log("ID:@1", await GaugeProxyV2.weights(1, pyveCRVETH));
   });
 
-  // it("successfully Distribute(initial) PICKLE to gauges advancing 7 days", async () => {
-  //   await advanceSevenDays();
-  //   console.log(
-  //     "currentId",
-  //     (await GaugeProxyV2.getCurrentPeriodId()).toString()
-  //   );
-  //   console.log(
-  //     "distributionId",
-  //     (await GaugeProxyV2.distributionId()).toString()
-  //   );
+  it.only("successfully Distribute(initial) PICKLE to gauges advancing 7 days", async () => {
+    await advanceSevenDays();
+    console.log(
+      "currentId",
+      (await GaugeProxyV2.getCurrentPeriodId()).toString()
+    );
+    console.log(
+      "distributionId",
+      (await GaugeProxyV2.distributionId()).toString()
+    );
 
-  //   await GaugeProxyV2.distribute(0, 2);
+    await GaugeProxyV2.distribute(0, 2);
 
-  //   const pickleGaugeAddr = await GaugeProxyV2.getGauge(pickleLP);
-  //   const yvecrvGaugeAddr = await GaugeProxyV2.getGauge(pyveCRVETH);
+    const pickleGaugeAddr = await GaugeProxyV2.getGauge(pickleLP);
+    const yvecrvGaugeAddr = await GaugeProxyV2.getGauge(pyveCRVETH);
 
-  //   const pickleRewards = await pickle.balanceOf(pickleGaugeAddr.gaugeAddress);
-  //   console.log("rewards to Pickle gauge", pickleRewards.toString());
+    const pickleRewards = await pickle.balanceOf(pickleGaugeAddr.gaugeAddress);
+    console.log("rewards to Pickle gauge", pickleRewards.toString());
 
-  //   const yvecrvRewards = await pickle.balanceOf(yvecrvGaugeAddr.gaugeAddress);
-  //   console.log("rewards to pyveCRV gauge", yvecrvRewards.toString());
+    const yvecrvRewards = await pickle.balanceOf(yvecrvGaugeAddr.gaugeAddress);
+    console.log("rewards to pyveCRV gauge", yvecrvRewards.toString());
 
-  //   console.log(
-  //     "-- pickleLP gauge with -ve weight ",
-  //     Number(await GaugeProxyV2.gaugeWithNegativeWeight(pickleGaugeAddr.gaugeAddress))
-  //   );
-  //   console.log(
-  //     "-- pyveCRVETH gauge with -ve weight ",
-  //     Number(await GaugeProxyV2.gaugeWithNegativeWeight(yvecrvGaugeAddr.gaugeAddress))
-  //   );
-  // });
+    console.log(
+      "-- pickleLP gauge with -ve weight ",
+      Number(await GaugeProxyV2.gaugeWithNegativeWeight(pickleGaugeAddr.gaugeAddress))
+    );
+    console.log(
+      "-- pyveCRVETH gauge with -ve weight ",
+      Number(await GaugeProxyV2.gaugeWithNegativeWeight(yvecrvGaugeAddr.gaugeAddress))
+    );
+  });
 
   it.only("Should test total aggregate voting successfully", async () => {
     await advanceSevenDays();
@@ -229,12 +149,12 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -1000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder1.sendTransaction(populatedTx);
-    console.log("ID:@2",await GaugeProxyV2.weights(2,pickleLP));
-    console.log("ID:@2------",await GaugeProxyV2.weights(2,pyveCRVETH));
+    console.log("ID:@3", await GaugeProxyV2.weights(3, pickleLP));
+    console.log("ID:@3------", await GaugeProxyV2.weights(3, pyveCRVETH));
 
     // vote by Zoro
     console.log("-- Voting on LP Gauge with by Zoro --");
@@ -242,18 +162,18 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -4000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder2.sendTransaction(populatedTx);
 
-    console.log("ID:@2",await GaugeProxyV2.weights(2,pickleLP));
-    console.log("ID:@2------",await GaugeProxyV2.weights(2,pyveCRVETH));
+    console.log("ID:@3", await GaugeProxyV2.weights(3, pickleLP));
+    console.log("ID:@3------", await GaugeProxyV2.weights(3, pyveCRVETH));
 
     await advanceSevenDays();
     //3
     console.log("-- Voting on LP Gauge with negative weight by Zoro -- 3");
-    await GaugeProxyV2.pid();
+
     console.log(
       "currentId",
       (await GaugeProxyV2.getCurrentPeriodId()).toString()
@@ -262,16 +182,15 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -1000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder2.sendTransaction(populatedTx);
 
-    console.log("ID:@3",await GaugeProxyV2.weights(3,pickleLP));
-    console.log("ID:@3",await GaugeProxyV2.weights(3,pyveCRVETH));
-
+    console.log("ID:@4", await GaugeV2By2.weights(4, pickleLP));
+    console.log("ID:@4", await GaugeV2By2.weights(4, pyveCRVETH));
     await advanceSevenDays();
-    await GaugeProxyV2.pid();
+
     //3
     console.log("-- Voting on LP Gauge with negative weight by Zoro -- 4");
     console.log(
@@ -282,16 +201,17 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -1000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder2.sendTransaction(populatedTx);
-    
-    console.log("ID:@4",await GaugeProxyV2.weights(4,pickleLP));
-    console.log("ID:@4------",await GaugeProxyV2.weights(4,pyveCRVETH));
+
+    console.log("ID:@5", await GaugeProxyV2.weights(5, pickleLP));
+    console.log("ID:@5------", await GaugeProxyV2.weights(5, pyveCRVETH));
+
 
     await advanceSevenDays();
-    await GaugeProxyV2.pid();
+
     //4
     console.log("-- Voting on LP Gauge with negative weight by Zoro -- 5");
     console.log(
@@ -302,16 +222,16 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -1000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder2.sendTransaction(populatedTx);
 
-    console.log("ID:@5",await GaugeProxyV2.weights(5,pickleLP));
-    console.log("ID:@5------",await GaugeProxyV2.weights(5,pyveCRVETH));
+    console.log("ID:@6", await GaugeProxyV2.weights(6, pickleLP));
+    console.log("ID:@6------", await GaugeProxyV2.weights(6, pyveCRVETH));
 
     await advanceSevenDays();
-    await GaugeProxyV2.pid();
+
     //5
     console.log("-- Voting on LP Gauge with negative weight by Zoro -- 6");
     console.log(
@@ -322,19 +242,13 @@ describe("vote & distribute", () => {
       [pickleLP, pyveCRVETH],
       [4000000, -1000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await dillHolder2.sendTransaction(populatedTx);
 
-    console.log("ID:@6",await GaugeProxyV2.weights(6,pickleLP));
-    console.log("ID:@6------",await GaugeProxyV2.weights(6,pyveCRVETH));
-
-    // console.log("Total weight =>",Number(await GaugeProxyV2.totalWeight(1)));
-    // rewards to Pickle gauge 79936051158800000
-    // rewards to pyveCRV gauge 119904076738200000
-    // rewards to pyveCRV gauge 177537555187922547
-    // distribute
+    console.log("ID:@7", await GaugeProxyV2.weights(7, pickleLP));
+    console.log("ID:@7------", await GaugeProxyV2.weights(7, pyveCRVETH));
 
     await advanceSevenDays();
     console.log(
@@ -355,7 +269,7 @@ describe("vote & distribute", () => {
     const yvecrvRewards = await pickle.balanceOf(yvecrvGaugeAddr.gaugeAddress);
     console.log("rewards to pyveCRV gauge", yvecrvRewards.toString());
   });
-  it("Should successfully test delist gauge", async () => {
+  it.only("Should successfully test delist gauge", async () => {
 
     const dillHolder2 = ethers.provider.getSigner(dillHolder2Addr);
     await expect(GaugeProxyV2.delistGauge(masterChefAddr)).to.be.revertedWith(
@@ -375,12 +289,14 @@ describe("vote & distribute", () => {
       "distributionId",
       (await GaugeProxyV2.distributionId()).toString()
     );
-    console.log("-- Distributing 5 times -- ");
+    console.log("-- Distributing 6 times -- ");
     await GaugeProxyV2.distribute(0, 2);
     await GaugeProxyV2.distribute(0, 2);
     await GaugeProxyV2.distribute(0, 2);
     await GaugeProxyV2.distribute(0, 2);
     await GaugeProxyV2.distribute(0, 2);
+    await GaugeProxyV2.distribute(0, 2);
+
 
     await expect(GaugeProxyV2.delistGauge(pickleLP)).to.be.revertedWith(
       "GaugeProxy: censors < 5"
@@ -394,7 +310,7 @@ describe("vote & distribute", () => {
       (await GaugeProxyV2.distributionId()).toString()
     );
 
-    
+
     const pickleGaugeAddr = await GaugeProxyV2.getGauge(pickleLP);
     const yvecrvGaugeAddr = await GaugeProxyV2.getGauge(pyveCRVETH);
 
@@ -403,7 +319,7 @@ describe("vote & distribute", () => {
 
     const yvecrvRewards = await pickle.balanceOf(yvecrvGaugeAddr.gaugeAddress);
     console.log("rewards to pyveCRV gauge", yvecrvRewards.toString());
-    
+
     console.log(
       "-- pickleLP gauge with -ve weight ",
       Number(await GaugeProxyV2.gaugeWithNegativeWeight(pickleGaugeAddr.gaugeAddress))

@@ -1,6 +1,6 @@
-const {advanceNDays, advanceSevenDays} = require("./testHelper");
+const { advanceNDays, advanceSevenDays, resetHardhatNetwork, deployGaugeProxy, unlockAccount } = require("./testHelper");
 const hre = require("hardhat");
-const {ethers} = require("hardhat");
+const { ethers } = require("hardhat");
 const chalk = require("chalk");
 
 const governanceAddr = "0x9d074E37d408542FD38be78848e8814AFB38db17";
@@ -21,7 +21,10 @@ let GaugeV2,
   GaugeV2ByZoro,
   GaugeV2BySanji,
   GaugeV2ByNami,
-  GaugeV2BydillHolder;
+  GaugeProxyV2,
+  GaugeFromGovernance,
+  GaugeV2BydillHolder,
+  governanceSigner;
 
 const tenPickles = ethers.utils.parseEther("10");
 const notifyRewardAmountMethod = async (print = true, days = 7) => {
@@ -33,13 +36,14 @@ const notifyRewardAmountMethod = async (print = true, days = 7) => {
   print
     ? console.log(chalk.blue("totalSupply pickle in contract =>", Number(ethers.utils.formatEther(totalSupply))))
     : "";
-  await pickleFromHolder.approve(thisContractAddr, 0);
-  await pickleFromHolder.approve(thisContractAddr, totalSupply);
-  await GaugeV2.notifyRewardAmount([totalSupply], {
-    gasLimit: 9000000,
+  // const bal = await pickle.balanceOf(thisContractAddr);
+  await pickle.connect(governanceSigner).approve(thisContractAddr, 0);
+  await pickle.connect(governanceSigner).approve(thisContractAddr, totalSupply);
+  await GaugeFromGovernance.notifyRewardAmount(pickleAddr, totalSupply, {
+    gasLimit: 5999999,
   });
-  print ? console.log("rewardRates =>", Number(ethers.utils.formatEther(await GaugeV2.rewardRates(0)))) : "";
-
+  let GaugePickleBalance = await pickle.balanceOf(thisContractAddr);
+  console.log("GaugePickleBalance in contract =>", Number(ethers.utils.formatEther(GaugePickleBalance)));
   // ***************** Luffy claims after every notify reward *****************
   await getAndPrintReward("Luffy", GaugeV2ByLuffy, Luffy.address);
 };
@@ -62,7 +66,10 @@ const getAndPrintReward = async (actor, gaugeByActor, address) => {
 
 describe("Liquidity Staking tests", () => {
   before("Setting up gaugeV2", async () => {
+    await resetHardhatNetwork()
+
     const signer = ethers.provider.getSigner();
+    governanceSigner = ethers.provider.getSigner(governanceAddr);
     pickleHolderSigner = ethers.provider.getSigner(pickleHolder);
     dillHolder = ethers.provider.getSigner(dillHolderAddr);
     [Luffy, Zoro, Sanji, Nami] = await ethers.getSigners();
@@ -83,33 +90,34 @@ describe("Liquidity Staking tests", () => {
     console.log("------------------------ sent ------------------------");
     console.log("pickleholder's ETH balance", await ethers.provider.getBalance(pickleHolder));
     /** unlock accounts */
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [governanceAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [dillHolderAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [pickleHolder],
-    });
+    await unlockAccount(governanceAddr);
+    await unlockAccount(dillHolderAddr);
+    await unlockAccount(pickleHolder);
 
     pickle = await ethers.getContractAt("src/yield-farming/pickle-token.sol:PickleToken", pickleAddr);
-
+    
+    GaugeProxyV2 = await deployGaugeProxy(governanceSigner);
     console.log("-- Deploying Gaugev2 contract --");
-    const gaugeV2 = await ethers.getContractFactory("/src/dill/gauge-proxy-v2.sol:GaugeV2", pickleHolderSigner);
-    const tokenSymbols = ["PICKLE"];
-    const rewardTokens = [pickleAddr];
-    GaugeV2 = await gaugeV2.deploy(pickleAddr, governanceAddr, pickleHolder, tokenSymbols, rewardTokens);
+    const gaugeV2 = await ethers.getContractFactory(
+      "/src/dill/gauges/GaugeV2.sol:GaugeV2",
+      pickleHolderSigner
+    );
+    GaugeV2 = await gaugeV2.deploy(
+      pickleAddr,
+      governanceAddr,
+      GaugeProxyV2.address
+    );
+    await GaugeV2.deployed();
+    GaugeFromGovernance = GaugeV2.connect(governanceSigner);
+    await GaugeFromGovernance.setRewardToken(pickleAddr, governanceAddr);
+    thisContractAddr = GaugeV2.address;
+    console.log("GaugeV2 deployed to:", thisContractAddr);
 
     await GaugeV2.deployed();
 
     thisContractAddr = GaugeV2.address;
     console.log("GaugeV2 deployed to:", thisContractAddr);
+
     //GaugeContract by actors
     GaugeV2ByLuffy = GaugeV2.connect(Luffy);
     GaugeV2ByZoro = GaugeV2.connect(Zoro);
@@ -170,7 +178,7 @@ describe("Liquidity Staking tests", () => {
       )
     );
 
-    await notifyRewardAmountMethod(5); // 35 days
+    await notifyRewardAmountMethod(true, 5); // 35 days
 
     // DepositAndLock (start time + 35 days) for 180 days
     await GaugeV2ByNami.depositAndLock(tenPickles, 180 * 86400, false);
@@ -201,7 +209,7 @@ describe("Liquidity Staking tests", () => {
       )
     );
 
-    await notifyRewardAmountMethod(5); // 70 days
+    await notifyRewardAmountMethod(true, 5); // 70 days
 
     advanceNDays(5); // 75 days
     // 2 days more to notify reward
@@ -224,12 +232,12 @@ describe("Liquidity Staking tests", () => {
       )
     );
 
-    await notifyRewardAmountMethod(2); // 77 days
+    await notifyRewardAmountMethod(true, 2); // 77 days
     await notifyRewardAmountMethod(); // 84 days
 
     // Advancing 19 weeks (217 days from start time) so that Nami's stake expires
     for (let i = 0; i < 19; i++) {
-      await notifyRewardAmountMethod(false); // 217 days
+      await notifyRewardAmountMethod(false, 7); // 217 days
     }
     await getAndPrintReward("Nami", GaugeV2ByNami, Nami.address); // Nami claims reward after stake expiry
 
@@ -237,7 +245,7 @@ describe("Liquidity Staking tests", () => {
 
     // Advancing 21 weeks (1 year from start time)
     for (let i = 0; i < 21; i++) {
-      await notifyRewardAmountMethod(false); // 364 days
+      await notifyRewardAmountMethod(false, 7); // 364 days
     }
     advanceNDays(2); // 366 days
 

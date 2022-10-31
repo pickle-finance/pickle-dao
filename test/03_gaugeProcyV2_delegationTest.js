@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const hre = require("hardhat");
 const { ethers, upgrades } = require("hardhat");
 
-const { advanceSevenDays } = require("./testHelper");
+const { advanceSevenDays, resetHardhatNetwork, deployGaugeProxy, deployGauge, unlockAccount } = require("./testHelper");
 
 const governanceAddr = "0x9d074E37d408542FD38be78848e8814AFB38db17";
 const masterChefAddr = "0xbD17B1ce622d73bD438b9E658acA5996dc394b0d";
@@ -15,91 +15,31 @@ let GaugeProxyV2, userSigner, populatedTx, masterChef, Gauge1, Gauge2;
 
 describe("Vote & Distribute", () => {
   before("Setting up gaugeProxyV2", async () => {
-    await network.provider.request({
-      method: "hardhat_reset",
-      params: [
-        {
-          forking: {
-            jsonRpcUrl: "https://mainnet.infura.io/v3/api",
-          },
-        },
-      ],
-    });
+    await resetHardhatNetwork()
     /**
      *  sending gas cost to gov
      * */
     const signer = ethers.provider.getSigner();
-    // console.log("-- Sending gas cost to governance addr --");
-    // await signer.sendTransaction({
-    //   to: governanceAddr,
-    //   value: ethers.BigNumber.from("10000000000000000000"), // 1000 ETH
-    //   data: undefined,
-    // });
+    console.log("-- Sending gas cost to governance addr --");
+    await signer.sendTransaction({
+      to: governanceAddr,
+      value: ethers.BigNumber.from("10000000000000000000"), // 1000 ETH
+      data: undefined,
+    });
 
     /** unlock governance account */
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [governanceAddr],
-    });
+    await unlockAccount(governanceAddr);
+
+    await unlockAccount(userAddr);
 
     const governanceSigner = ethers.provider.getSigner(governanceAddr);
     userSigner = ethers.provider.getSigner(userAddr);
-    masterChef = await ethers.getContractAt(
-      "src/yield-farming/masterchef.sol:MasterChef",
-      masterChefAddr,
-      governanceSigner
-    );
-    masterChef.connect(governanceSigner);
+    const signerAddress = await signer.getAddress()
 
-    /** Deploy gaugeProxyV2 */
-    console.log("-- Deploying GaugeProxy v2 contract --");
-    const gaugeProxyV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxies/gauge-proxy-v2.sol:GaugeProxyV2",
-      governanceSigner
-    );
-    // getting timestamp
-    const blockNumBefore = await ethers.provider.getBlockNumber();
-    const blockBefore = await ethers.provider.getBlock(blockNumBefore);
-    const timestampBefore = blockBefore.timestamp;
-
-    GaugeProxyV2 = await upgrades.deployProxy(gaugeProxyV2, [timestampBefore], {
-      initializer: "initialize",
-    });
-    await GaugeProxyV2.deployed();
-
-    console.log("GaugeProxyV2 deployed to:", GaugeProxyV2.address);
-
-    const mDILLAddr = await GaugeProxyV2.TOKEN();
-    console.log("-- Adding mDILL to MasterChef --");
-    let populatedTx;
-    populatedTx = await masterChef.populateTransaction.add(
-      5000000,
-      mDILLAddr,
-      false
-    );
-    await governanceSigner.sendTransaction(populatedTx);
-
-
-    console.log("Deploying gauges");
-    let signerAddress = await signer.getAddress()
-
-    const gauge1 = await ethers.getContractFactory("GaugeV2");
-    Gauge1 = await gauge1.deploy(pickleLP, signerAddress, GaugeProxyV2.address);
-    await Gauge1.deployed();
-    await Gauge1.setRewardToken(pickleAddr, GaugeProxyV2.address);
-
-    const gauge2 = await ethers.getContractFactory("GaugeV2");
-    Gauge2 = await gauge2.deploy(pyveCRVETH, signerAddress, GaugeProxyV2.address);
-    await Gauge2.deployed();
-    await Gauge2.setRewardToken(pickleAddr, GaugeProxyV2.address);
-
-    await hre.network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [userAddr],
-    });
-    const pidDill = (await masterChef.poolLength()) - 1;
-    await GaugeProxyV2.setPID(pidDill);
-    await GaugeProxyV2.deposit();
+    GaugeProxyV2 = await deployGaugeProxy(governanceSigner);
+    Gauge1 = await deployGauge(pickleLP, signerAddress, GaugeProxyV2.address, pickleAddr);
+    Gauge2 = await deployGauge(pyveCRVETH, signerAddress, GaugeProxyV2.address, pickleAddr);
+    await advanceSevenDays();
   });
   beforeEach(async () => {
     console.log(
@@ -183,7 +123,7 @@ describe("Vote & Distribute", () => {
       [pickleLP, pyveCRVETH],
       [6000000, 4000000],
       {
-        gasLimit: 9000000,
+        gasLimit: 900000,
       }
     );
     await userSigner.sendTransaction(populatedTx);

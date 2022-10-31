@@ -1,4 +1,4 @@
-const { advanceSevenDays } = require("./testHelper");
+const { advanceSevenDays, advanceNDays, resetHardhatNetwork, deployGaugeProxy, unlockAccount } = require("./testHelper");
 const hre = require("hardhat");
 const { ethers } = require("hardhat");
 const { expect } = require("chai");
@@ -24,32 +24,14 @@ let userSigner,
   Luffy,
   Zoro,
   Sanji,
-  Nami;
+  Nami,
+  GaugeFromGovernance,
+  GaugeProxyV2;
 const fivePickle = ethers.utils.parseEther("5");
-
-const printStakes = async (address) => {
-  let stakes = await Jar.getLockedStakesOf(address);
-  console.log(
-    "********************* Locked stakes ********************************************"
-  );
-  stakes.forEach((stake, index) => {
-    console.log(
-      "Liquidity in stake with index",
-      index,
-      ethers.utils.formatEther(stake.liquidity),
-      "ending timestamp",
-      stake.ending_timestamp,
-      "are",
-      stake.isPermanentlyLocked ? "locked" : "unlocked"
-    );
-  });
-  console.log(
-    "*******************************************************************************"
-  );
-};
 
 describe("Liquidity Staking tests", () => {
   before("Setting up gaugeV2", async () => {
+    await resetHardhatNetwork();
     const signer = ethers.provider.getSigner();
     pickleHolderSigner = ethers.provider.getSigner(pickleHolder);
     userSigner = ethers.provider.getSigner(userAddr);
@@ -73,25 +55,10 @@ describe("Liquidity Staking tests", () => {
     console.log("------------------------ sent ------------------------");
 
     /** unlock accounts */
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [governanceAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [userAddr],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [dillHolder],
-    });
-
-    await hre.network.provider.request({
-      method: "evm_unlockUnknownAccount",
-      params: [pickleHolder],
-    });
+    await unlockAccount(governanceAddr);
+    await unlockAccount(userAddr);
+    await unlockAccount(dillHolder);
+    await unlockAccount(pickleHolder);
 
     pickle = await ethers.getContractAt(
       "src/yield-farming/pickle-token.sol:PickleToken",
@@ -107,30 +74,32 @@ describe("Liquidity Staking tests", () => {
     await Jar.deployed();
     console.log("Jar deployed at", Jar.address);
 
+    GaugeProxyV2 = await deployGaugeProxy(governanceSigner);
+
+    console.log("GaugeProxyV2 deployed to:", GaugeProxyV2.address);
+
     console.log("-- Deploying VirtualGaugeV2 contract --");
     const virtualGaugeV2 = await ethers.getContractFactory(
-      "/src/dill/gauge-proxy-v2.sol:VirtualGaugeV2",
+      "/src/dill/gauges/VirtualGaugeV2.sol:VirtualGaugeV2",
       pickleHolderSigner
     );
     await expect(
       virtualGaugeV2.deploy(
         zeroAddr,
         governanceAddr,
-        pickleHolder,
-        ["PICKLE"],
-        [pickleAddr]
+        GaugeProxyV2.address
       )
-    ).to.be.revertedWith("cannot set zero address");
+    ).to.be.revertedWith("Cannot set token to zero address");
     VirtualGaugeV2 = await virtualGaugeV2.deploy(
       Jar.address,
       governanceAddr,
-      pickleHolder,
-      ["PICKLE"],
-      [pickleAddr]
+      GaugeProxyV2.address
     );
+
     await VirtualGaugeV2.deployed();
     thisContractAddr = VirtualGaugeV2.address;
     console.log("VirtualGaugeV2 deployed to:", thisContractAddr);
+    GaugeFromGovernance = VirtualGaugeV2.connect(governanceSigner);
 
     const pickleFromHolder = pickle.connect(pickleHolderSigner);
 
@@ -187,10 +156,6 @@ describe("Liquidity Staking tests", () => {
     console.log("Virtual Gauge =>", jarAd);
 
     // Deposit pickle
-    await expect(
-      VirtualGaugeV2.depositFor(fivePickle, Luffy.address)
-    ).to.be.revertedWith("Sender not an authorized jar or address.");
-
     console.log("-- Depositing 5 pickle for Luffy --");
     await Jar.depositForByJar(fivePickle, Luffy.address);
     console.log(
@@ -214,9 +179,9 @@ describe("Liquidity Staking tests", () => {
 
     await expect(
       Jar.depositForAndLockByJar(0, Luffy.address, 86400 * 30, false, {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       })
-    ).to.be.revertedWith("Cannot stake 0");
+    ).to.be.revertedWith("Cannot deposit 0");
 
     await Jar.depositForAndLockByJar(
       fivePickle,
@@ -224,7 +189,7 @@ describe("Liquidity Staking tests", () => {
       86400 * 30,
       false,
       {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       }
     );
     //Approve pickle for deposit and lock
@@ -238,7 +203,7 @@ describe("Liquidity Staking tests", () => {
       86400 * 300,
       false,
       {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       }
     );
 
@@ -253,7 +218,7 @@ describe("Liquidity Staking tests", () => {
       86400 * 300,
       false,
       {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       }
     );
     console.log(
@@ -269,20 +234,15 @@ describe("Liquidity Staking tests", () => {
       Number(ethers.utils.formatEther(await pickle.balanceOf(Jar.address)))
     );
 
-    await printStakes(Luffy.address);
-
     advanceSevenDays();
 
     // withdraw
     console.log("-- Withdrawing Luffy's stake");
-
-    await expect(Jar.withdrawByJar(Luffy.address, 10)).to.be.revertedWith(
-      "Stake not found"
+    await expect(Jar.withdrawNonStakedByJar(Luffy.address, ethers.utils.parseEther("10"))).to.be.revertedWith(
+      "Cannot withdraw more than your non-staked balance"
     );
 
-    await Jar.withdrawByJar(Luffy.address, 0);
-    // For failing if (thisStake.liquidity > 0)
-    await Jar.withdrawByJar(Luffy.address, 0);
+    await Jar.withdrawNonStakedByJar(Luffy.address, ethers.utils.parseEther("5"));
 
     console.log(
       "Jar Balance of Luffy",
@@ -294,38 +254,31 @@ describe("Liquidity Staking tests", () => {
     );
     console.log(
       "Pickle Balance of Jar =>",
-      Number(ethers.utils.formatEther(await pickle.balanceOf(Jar.address)))
-    );
-    await printStakes(Luffy.address);
+      Number(ethers.utils.formatEther(await pickle.balanceOf(Jar.address))))
+
 
     // notify reward
     const bal = await pickle.balanceOf(Jar.address);
-    await pickle
-      .connect(pickleHolderSigner)
-      .approve(VirtualGaugeV2.address, bal);
+    await pickle.connect(governanceSigner).approve(thisContractAddr, 0);
+    await pickle.connect(governanceSigner).approve(thisContractAddr, bal);
     await expect(
-      VirtualGaugeV2.connect(Luffy).notifyRewardAmount([bal], {
-        gasLimit: 9000000,
+      VirtualGaugeV2.connect(userSigner).notifyRewardAmount(pickleAddr, bal, {
+        gasLimit: 5999999,
       })
     ).to.be.revertedWith("Caller is not RewardsDistribution contract");
 
-    await expect(
-      VirtualGaugeV2.notifyRewardAmount([bal, bal], {
-        gasLimit: 9000000,
-      })
-    ).to.be.revertedWith("Rewards count do not match reward token count");
-
     console.log("--Executing NotifyReward --");
-    await VirtualGaugeV2.notifyRewardAmount([bal], {
-      gasLimit: 9000000,
-    });
+    GaugeFromGovernance.notifyRewardAmount(pickleAddr, bal, {
+      gasLimit: 5999999,
+    })
+
     console.log("-- RE-Executing NotifyReward --");
+    await GaugeFromGovernance.setRewardToken(pickleAddr, governanceAddr);
     const bal2 = await pickle.balanceOf(Jar.address);
-    await pickle
-      .connect(pickleHolderSigner)
-      .approve(VirtualGaugeV2.address, bal2);
-    await VirtualGaugeV2.notifyRewardAmount([bal], {
-      gasLimit: 9000000,
+    await pickle.connect(governanceSigner).approve(thisContractAddr, 0);
+    await pickle.connect(governanceSigner).approve(thisContractAddr, bal2);
+    await GaugeFromGovernance.notifyRewardAmount(pickleAddr, bal2, {
+      gasLimit: 5999999,
     });
 
     //get Reward
@@ -336,7 +289,7 @@ describe("Liquidity Staking tests", () => {
     console.log("Total Supply =>", await VirtualGaugeV2.totalSupply());
     console.log("--Executing get reward --");
     await Jar.getRewardByJar(Luffy.address, {
-      gasLimit: 90000000,
+      gasLimit: 5999999,
     });
     console.log(
       "Pickle Balance of Luffy =>",
@@ -349,7 +302,6 @@ describe("Liquidity Staking tests", () => {
       Luffy.address
     );
 
-    await printStakes(Luffy.address);
     console.log(
       "Pickle Balance of Luffy =>",
       Number(ethers.utils.formatEther(await pickle.balanceOf(Luffy.address)))
@@ -360,8 +312,7 @@ describe("Liquidity Staking tests", () => {
       "Pickle Balance of Luffy =>",
       Number(ethers.utils.formatEther(await pickle.balanceOf(Luffy.address)))
     );
-    // print Luffy's Stakes
-    await printStakes(Luffy.address);
+
 
     console.log(
       "Pickle Balance of Luffy =>",
@@ -380,78 +331,11 @@ describe("Liquidity Staking tests", () => {
     console.log(" -- Emergency unlock all stakes -- ");
     await VirtualGaugeV2.connect(governanceSigner).unlockStakes();
 
-    console.log(" -- Zoro's stake -- ");
-    await printStakes(Zoro.address);
-
     console.log("-- Exiting Zoro -- ");
-    await Jar.exit(Zoro.address);
+    await Jar.exitByJar(Zoro.address);
 
-    console.log(" -- Zoro's stake after exit -- ");
-    await printStakes(Zoro.address);
     console.log("--Locking emergency unlock for all stakes -- ");
     await VirtualGaugeV2.connect(governanceSigner).unlockStakes();
-
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setMaxRewardsDuration(
-        86400 * 400,
-        {
-          gasLimit: 9000000,
-        }
-      )
-    ).to.be.revertedWith("Reward period incomplete");
-    await advanceSevenDays();
-    await advanceSevenDays();
-
-    // test various setters
-    console.log(" -- Testing MaxDuration setters -- ");
-    await expect(
-      VirtualGaugeV2.setMaxRewardsDuration(86400, { gasLimit: 9000000 })
-    ).to.be.revertedWith("Operation allowed by only governance");
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setMaxRewardsDuration(8640, {
-        gasLimit: 9000000,
-      })
-    ).to.be.revertedWith("Rewards duration too short");
-    const newMaxTime = 86400 * 400;
-    await VirtualGaugeV2.connect(governanceSigner).setMaxRewardsDuration(
-      newMaxTime,
-      {
-        gasLimit: 9000000,
-      }
-    );
-    const maxTime = await VirtualGaugeV2.lockTimeForMaxMultiplier();
-    expect(newMaxTime).to.be.eq(maxTime);
-
-    console.log(" -- Testing multiplier setters -- ");
-    await expect(
-      VirtualGaugeV2.setMultipliers(1, { gasLimit: 9000000 })
-    ).to.be.revertedWith("Operation allowed by only governance");
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setMultipliers(10 ** 14, {
-        gasLimit: 9000000,
-      })
-    ).to.be.revertedWith("Multiplier must be greater than or equal to 1e18");
-    console.log("Multiplier =>", await VirtualGaugeV2.lockMaxMultiplier());
-    const newMultiplier = ethers.utils.parseEther("1");
-    await VirtualGaugeV2.connect(governanceSigner).setMultipliers(
-      newMultiplier,
-      {
-        gasLimit: 9000000,
-      }
-    );
-    const maxMultiplier = await VirtualGaugeV2.lockMaxMultiplier();
-    expect(maxMultiplier).to.be.eq(newMultiplier);
-
-    await expect(VirtualGaugeV2.setJar(Jar.address)).to.be.revertedWith(
-      "Operation allowed by only governance"
-    );
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setJar(zeroAddr)
-    ).to.be.revertedWith("cannot set to zero");
-
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setJar(Jar.address)
-    ).to.be.revertedWith("Jar is already set");
 
     //maxMultiplier and duration
     const multiplierFor1year = await VirtualGaugeV2.lockMultiplier(86400 * 365);
@@ -474,108 +358,37 @@ describe("Liquidity Staking tests", () => {
       .approve(Jar.address, DillHolderPickleBalance);
     await expect(
       Jar.depositForAndLockByJar(fivePickle, dillHolder, 86, false, {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       })
     ).to.be.revertedWith("Minimum stake time not met");
 
     await expect(
       Jar.depositForAndLockByJar(fivePickle, dillHolder, 86400 * 401, false, {
-        gasLimit: 9000000,
+        gasLimit: 5999999,
       })
     ).to.be.revertedWith("Trying to lock for too long");
 
-    await expect(
-      Jar.depositForAndLockByJar(fivePickle, dillHolder, 86, false, {
-        gasLimit: 9000000,
-      })
-    ).to.be.revertedWith("Minimum stake time not met");
-
     console.log(" -- deposit and lock 5 pickle for 3 days -- ");
     await Jar.depositForAndLockByJar(fivePickle, dillHolder, 86400 * 3, false, {
-      gasLimit: 9000000,
+      gasLimit: 5999999,
     });
 
-    console.log(" -- deposit and lock 5 pickle for 365 days -- ");
-    await Jar.depositForAndLockByJar(
-      fivePickle,
-      dillHolder,
-      86400 * 365,
-      false,
-      {
-        gasLimit: 9000000,
-      }
+    await expect(Jar.withdrawUnlockedStakedByJar(dillHolder)).to.be.revertedWith(
+      "Cannot withdraw more than non-staked amount"
     );
 
-    await expect(Jar.withdrawByJar(dillHolder, 1)).to.be.revertedWith(
-      "Stake is still locked!"
-    );
     console.log(" -- deposit and lock 5 pickle 1 day -- ");
     await Jar.depositForAndLockByJar(fivePickle, dillHolder, 86400, false, {
-      gasLimit: 9000000,
+      gasLimit: 5999999,
     });
+    await advanceNDays(1);
 
-    console.log(" -- deposit and lock 5 pickle permanently -- ");
-    await Jar.depositForAndLockByJar(fivePickle, dillHolder, 86400, true, {
-      gasLimit: 9000000,
-    });
-
-    await printStakes(dillHolder);
-    advanceSevenDays();
-
-    await expect(
-      Jar.partialWithdrawalByJar(dillHolder, ethers.utils.parseEther("5000"))
-    ).to.be.revertedWith("Withdraw amount exceeds balance");
-
-    // Withdraw 5 pickle (= liquidity in first unlocked stake)
-    console.log(" -- Partially withdrawing 5 pickle -- ");
-    await Jar.partialWithdrawalByJar(dillHolder, fivePickle); // working fine
-
-    await printStakes(dillHolder);
-
-    // Withdraw 2 pickle (< liquidity in first unlocked stake)
-    console.log(" -- Partially withdrawing 2 pickle -- ");
-    await Jar.partialWithdrawalByJar(dillHolder, ethers.utils.parseEther("2")); // working fine
-
-    await printStakes(dillHolder);
-
-    // Withdraw 5 pickle (> liquidity in first unlocked stake)
-    console.log(" -- Partially withdrawing 5 pickle -- ");
-    await Jar.partialWithdrawalByJar(dillHolder, fivePickle);
-
-    await printStakes(dillHolder);
-
-    //set jar to other address
-    await VirtualGaugeV2.connect(governanceSigner).setAuthoriseAddress(
-      governanceAddr,
-      true
+    await expect(Jar.withdrawUnlockedStakedByJar(dillHolder)).to.be.revertedWith(
+      "Cannot withdraw more than non-staked amount"
     );
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).setAuthoriseAddress(
-        governanceAddr,
-        true
-      )
-    ).to.be.revertedWith("address is already set to given value");
 
-    console.log("-- Exiting dillHolder");
-    await Jar.exit(dillHolder);
-
-    await printStakes(dillHolder);
-
-    // check if jar can be changed
-    await VirtualGaugeV2.connect(governanceSigner).setJar(pickleLP);
+    advanceSevenDays();
+    await Jar.withdrawUnlockedStakedByJar(dillHolder)
   });
-  it("Should change governance successfully", async () => {
-    await expect(
-      VirtualGaugeV2.connect(Luffy).setGovernance(dillHolder)
-    ).to.be.revertedWith("setGovernance: !gov");
-    // set gov
-    await VirtualGaugeV2.connect(governanceSigner).setGovernance(dillHolder);
-    //accept gov
-    await expect(
-      VirtualGaugeV2.connect(governanceSigner).acceptGovernance()
-    ).to.be.revertedWith("acceptGovernance: !pendingGov");
-    await VirtualGaugeV2.connect(dillHolderSigner).acceptGovernance();
-  });
-
   // await hre.network.provider.send("hardhat_reset");
 });
